@@ -1,0 +1,80 @@
+# =============================================================================
+# Development Overrides
+# =============================================================================
+# This file is automatically loaded by docker compose in development.
+# For production, use: docker compose -f docker-compose.yml up
+#
+# Features:
+# - Volume mounts for live code reloading
+# - Debug logging
+# - Exposed ports for direct service access
+# - Hot reload via watchdog
+# =============================================================================
+
+version: '3.8'
+
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "8080:80"  # Alternative port for development
+
+  api:
+    build:
+      context: ..
+      target: runtime
+    volumes:
+      # Mount source code for live reloading
+      - ../api.py:/app/api.py:ro
+      - ../cli.py:/app/cli.py:ro
+      - ../wsgi.py:/app/wsgi.py:ro
+      - ../gm_agent:/app/gm_agent:ro
+      # Mount local campaigns for testing
+      - ../data/campaigns:/data/campaigns
+      # Mount local pf2e-rag (sibling directory)
+      - ../../pf2e-rag:/data/pf2e-rag:ro
+    environment:
+      - FLASK_DEBUG=1
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "5000:5000"  # Direct API access for debugging
+    # Use Flask dev server with auto-reload
+    command: >
+      python -m flask run
+      --host=0.0.0.0
+      --port=5000
+      --reload
+      --debugger
+
+  celery-worker:
+    volumes:
+      # Mount source code for live reloading
+      - ../gm_agent:/app/gm_agent:ro
+      # Mount local pf2e-rag (sibling directory)
+      - ../../pf2e-rag:/data/pf2e-rag:ro
+      # Mount local campaigns for testing
+      - ../data/campaigns:/data/campaigns
+    environment:
+      - LOG_LEVEL=DEBUG
+    # Auto-reload on code changes
+    command: >
+      watchmedo auto-restart
+      --directory=/app/gm_agent
+      --pattern=*.py
+      --recursive
+      --
+      celery -A gm_agent.tasks worker
+      --loglevel=debug
+      --concurrency=2
+      --pool=prefork
+
+  redis:
+    ports:
+      - "6379:6379"  # Direct Redis access for debugging
+
+  cli:
+    volumes:
+      - ../cli.py:/app/cli.py:ro
+      - ../gm_agent:/app/gm_agent:ro
+      - ../data/campaigns:/data/campaigns
+      - ../../pf2e-rag:/data/pf2e-rag:ro

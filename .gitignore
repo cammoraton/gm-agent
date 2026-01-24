@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.coverage
+.pytest_cache/
+.venv/
+.env
+uv.lock
+
+# Data directory (keep structure, ignore contents)
+data/*
+!data/.gitkeep
+!data/campaigns/
+data/campaigns/*
+!data/campaigns/.gitkeep
+
+# Database files
+*.db
+
+# Docker
+.env.docker.local
+docker-compose.local.yml
+docker-data/
+
+# Nginx logs (if mounted locally)
+infrastructure/nginx/logs/

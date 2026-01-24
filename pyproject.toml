@@ -1,0 +1,85 @@
+[project]
+name = "gm-agent"
+version = "0.1.0"
+description = "Pathfinder 2e GM Agent with RAG integration"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.0",
+    "ollama>=0.4",
+    "openai>=1.0",
+    "anthropic>=0.30",
+    "python-dotenv>=1.0",
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "flask-jwt-extended>=4.6",
+    "flask-socketio>=5.3",
+    "python-socketio>=5.10",
+    "flasgger>=0.9",
+    "sentence-transformers>=5.2.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+]
+docker = [
+    "redis>=5.0",
+    "celery[redis]>=5.3",
+    "gunicorn>=21.0",
+    "eventlet>=0.35",
+    "watchdog>=4.0",
+]
+
+[project.scripts]
+gm = "cli:cli"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "pylint>=4.0.4",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+exclude = '''
+/(
+    \.git
+    | \.venv
+    | __pycache__
+    | data
+    | campaigns
+)/
+'''
+
+[tool.pylint.main]
+ignore = ["data", "campaigns", ".venv"]
+jobs = 0
+
+[tool.pylint.messages_control]
+disable = [
+    "R0903",  # too-few-public-methods
+    "R0913",  # too-many-arguments
+    "W0718",  # broad-exception-caught
+    "W1203",  # logging-fstring-interpolation (f-strings are fine)
+]
+
+[tool.pylint.format]
+max-line-length = 100
