@@ -3,6 +3,8 @@
 from .base import MCPServer, ToolDef, ToolParameter, ToolResult
 from .pf2e_rag import PF2eRAGServer
 from .campaign_state import CampaignStateServer
+from .creature_modifier import CreatureModifierServer
+from .subsystem import SubsystemServer
 from .foundry_vtt import FoundryBridge, FoundryVTTServer
 from .client import MCPClient, MCPClientContextManager
 from .registry import (
@@ -28,6 +30,8 @@ __all__ = [
     # Server implementations
     "PF2eRAGServer",
     "CampaignStateServer",
+    "CreatureModifierServer",
+    "SubsystemServer",
     "FoundryBridge",
     "FoundryVTTServer",
     # Client

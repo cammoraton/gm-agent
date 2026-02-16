@@ -344,6 +344,84 @@ class KnowledgeStore:
 
         return shareable
 
+    def has_similar_knowledge(self, character_id: str, content: str) -> bool:
+        """Check if a character already has similar knowledge.
+
+        Uses exact match and normalized substring check.
+
+        Args:
+            character_id: Character ID to check
+            content: Knowledge content to compare
+
+        Returns:
+            True if similar knowledge already exists
+        """
+        conn = self._get_conn()
+        normalized = content.strip().lower()
+
+        # Exact match check
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM knowledge WHERE character_id = ? AND LOWER(TRIM(content)) = ?",
+            (character_id, normalized),
+        )
+        if cursor.fetchone()[0] > 0:
+            return True
+
+        # Substring check - if existing content contains the new, or vice versa
+        cursor = conn.execute(
+            "SELECT content FROM knowledge WHERE character_id = ?",
+            (character_id,),
+        )
+        for row in cursor:
+            existing = row[0].strip().lower()
+            if existing == normalized:
+                return True
+            # Check if one is a substantial substring of the other (>80% overlap)
+            shorter, longer = (normalized, existing) if len(normalized) <= len(existing) else (existing, normalized)
+            if shorter and len(shorter) > 20 and shorter in longer:
+                return True
+
+        return False
+
+    def copy_knowledge(
+        self,
+        source_id: int,
+        target_character_id: str,
+        target_character_name: str,
+        new_source: str,
+    ) -> "KnowledgeEntry | None":
+        """Copy a knowledge entry to a different character.
+
+        Returns None if the target already has similar knowledge.
+
+        Args:
+            source_id: ID of the knowledge entry to copy
+            target_character_id: Character ID to copy to
+            target_character_name: Character name for display
+            new_source: Source attribution for the copy
+
+        Returns:
+            The new KnowledgeEntry, or None if duplicate
+        """
+        entry = self.get_by_id(source_id)
+        if not entry:
+            return None
+
+        if self.has_similar_knowledge(target_character_id, entry.content):
+            return None
+
+        return self.add_knowledge(
+            character_id=target_character_id,
+            character_name=target_character_name,
+            content=entry.content,
+            knowledge_type=entry.knowledge_type,
+            sharing_condition=entry.sharing_condition,
+            source=new_source,
+            importance=entry.importance,
+            decay_rate=entry.decay_rate,
+            tags=list(entry.tags),
+        )
+
     def update_importance(self, knowledge_id: int, new_importance: int) -> bool:
         """Update the importance of a knowledge entry.
 

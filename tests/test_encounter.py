@@ -196,6 +196,8 @@ class TestEncounterServer:
         assert "suggest_encounter" in tool_names
         assert "calculate_creature_xp" in tool_names
         assert "get_encounter_advice" in tool_names
+        assert "roll_random_encounter" in tool_names
+        assert len(tools) == 5
 
     def test_evaluate_encounter_tool(self, server):
         """Should evaluate encounter via tool call."""
@@ -263,9 +265,71 @@ class TestEncounterServer:
         assert "Variety" in result.data["advice"]
         assert "Morale" in result.data["advice"]
 
+    def test_roll_random_encounter_moderate(self, server):
+        """Should generate budget for moderate random encounter."""
+        result = server.call_tool("roll_random_encounter", {
+            "party_level": 5,
+            "difficulty": "moderate",
+        })
+        assert result.success
+        assert "XP Budget" in result.data
+        assert "80" in result.data  # moderate budget for 4 players
+        assert "Creature Level Range" in result.data
+
+    def test_roll_random_encounter_severe(self, server):
+        """Should generate higher budget for severe encounters."""
+        result = server.call_tool("roll_random_encounter", {
+            "party_level": 5,
+            "difficulty": "severe",
+            "party_size": 4,
+        })
+        assert result.success
+        assert "120" in result.data  # severe budget for 4 players
+
+    def test_roll_random_encounter_with_terrain(self, server):
+        """Should include terrain filter hint."""
+        result = server.call_tool("roll_random_encounter", {
+            "party_level": 5,
+            "terrain": "forest",
+        })
+        assert result.success
+        assert "forest" in result.data
+
+    def test_roll_random_encounter_night(self, server):
+        """Should suggest nocturnal creatures at night."""
+        result = server.call_tool("roll_random_encounter", {
+            "party_level": 5,
+            "time_of_day": "night",
+        })
+        assert result.success
+        assert "nocturnal" in result.data.lower() or "night" in result.data.lower()
+
     def test_unknown_tool(self, server):
         """Should return error for unknown tool."""
         result = server.call_tool("unknown_tool", {})
 
         assert not result.success
         assert "Unknown tool" in result.error
+
+
+class TestRollRandomEncounterBudget:
+    """Tests for roll_random_encounter_budget function."""
+
+    def test_moderate_budget_4_players(self):
+        from gm_agent.mcp.encounter import roll_random_encounter_budget
+        result = roll_random_encounter_budget(5, "moderate", 4)
+        assert result["xp_budget"] == 80
+        assert result["party_level"] == 5
+        assert result["estimated_creature_count"] == 2  # 80 / 40
+
+    def test_severe_budget_5_players(self):
+        from gm_agent.mcp.encounter import roll_random_encounter_budget
+        result = roll_random_encounter_budget(5, "severe", 5)
+        assert result["xp_budget"] == 150  # 120 + 30
+        assert result["recommended_creature_level"]["min"] >= -1
+        assert result["recommended_creature_level"]["max"] <= 9
+
+    def test_trivial_budget_caps_level_range(self):
+        from gm_agent.mcp.encounter import roll_random_encounter_budget
+        result = roll_random_encounter_budget(5, "trivial", 4)
+        assert result["recommended_creature_level"]["max"] == 7  # party_level + 2

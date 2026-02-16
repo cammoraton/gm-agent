@@ -435,6 +435,164 @@ class TestPreferences:
         assert "no valid" in result.data.lower()
 
 
+class TestLogDialogue:
+    """Tests for log_dialogue tool."""
+
+    def test_log_dialogue_basic(self, campaign_state_setup):
+        """log_dialogue should record NPC dialogue."""
+        server = campaign_state_setup["server"]
+
+        result = server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "Graak",
+                "content": "You dare enter my domain?",
+                "dialogue_type": "threat",
+            },
+        )
+
+        assert result.success
+        assert "threat" in result.data
+        assert "Graak" in result.data
+
+    def test_log_dialogue_searchable(self, campaign_state_setup):
+        """Logged dialogue should be searchable."""
+        server = campaign_state_setup["server"]
+
+        server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "Graak",
+                "content": "Bring me the dragon's tooth and I'll release your merchants.",
+                "dialogue_type": "promise",
+                "flagged": True,
+            },
+        )
+
+        result = server.call_tool(
+            "search_dialogue",
+            {"character_name": "Graak"},
+        )
+
+        assert result.success
+        assert "dragon's tooth" in result.data
+        assert "promise" in result.data
+
+    def test_log_dialogue_flagged(self, campaign_state_setup):
+        """Flagged dialogue should be searchable by flag."""
+        server = campaign_state_setup["server"]
+
+        server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "Mayor",
+                "content": "I'll pay you 100 gold upon your return.",
+                "dialogue_type": "promise",
+                "flagged": True,
+            },
+        )
+        server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "Guard",
+                "content": "The gate closes at sundown.",
+                "dialogue_type": "statement",
+            },
+        )
+
+        result = server.call_tool(
+            "search_dialogue",
+            {"flagged_only": True},
+        )
+
+        assert result.success
+        assert "100 gold" in result.data
+        assert "sundown" not in result.data
+
+    def test_log_dialogue_requires_name(self, campaign_state_setup):
+        """log_dialogue should require character_name."""
+        server = campaign_state_setup["server"]
+
+        result = server.call_tool(
+            "log_dialogue",
+            {"content": "Hello"},
+        )
+
+        assert not result.success
+        assert "character_name" in result.error
+
+    def test_log_dialogue_requires_content(self, campaign_state_setup):
+        """log_dialogue should require content."""
+        server = campaign_state_setup["server"]
+
+        result = server.call_tool(
+            "log_dialogue",
+            {"character_name": "Graak"},
+        )
+
+        assert not result.success
+        assert "content" in result.error.lower()
+
+    def test_log_dialogue_normalizes_invalid_type(self, campaign_state_setup):
+        """Invalid dialogue_type should default to statement."""
+        server = campaign_state_setup["server"]
+
+        result = server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "NPC",
+                "content": "Hello there",
+                "dialogue_type": "invalid_type",
+            },
+        )
+
+        assert result.success
+        assert "statement" in result.data
+
+    def test_log_dialogue_all_types(self, campaign_state_setup):
+        """All valid dialogue types should be accepted."""
+        server = campaign_state_setup["server"]
+
+        for dtype in ("statement", "promise", "threat", "lie", "rumor", "secret"):
+            result = server.call_tool(
+                "log_dialogue",
+                {
+                    "character_name": "NPC",
+                    "content": f"A {dtype}",
+                    "dialogue_type": dtype,
+                },
+            )
+            assert result.success, f"Failed for type: {dtype}"
+            assert dtype in result.data
+
+    def test_log_dialogue_in_tool_list(self, campaign_state_setup):
+        """log_dialogue should be listed in tools."""
+        server = campaign_state_setup["server"]
+        tool_names = [t.name for t in server.list_tools()]
+        assert "log_dialogue" in tool_names
+
+    def test_log_dialogue_slugifies_character_id(self, campaign_state_setup):
+        """Character names should be slugified for character_id."""
+        server = campaign_state_setup["server"]
+
+        server.call_tool(
+            "log_dialogue",
+            {
+                "character_name": "Lord Gyr of Absalom",
+                "content": "Welcome to my court.",
+            },
+        )
+
+        # Search by character name to verify it was stored
+        result = server.call_tool(
+            "search_dialogue",
+            {"character_name": "Lord Gyr of Absalom"},
+        )
+
+        assert result.success
+        assert "Welcome to my court" in result.data
+
+
 class TestUnknownTool:
     """Tests for unknown tool handling."""
 
@@ -446,3 +604,154 @@ class TestUnknownTool:
 
         assert not result.success
         assert "unknown tool" in result.error.lower()
+
+
+class TestTravelTime:
+    """Phase 4D: calculate_travel_time tool."""
+
+    def test_travel_time_basic(self, campaign_state_setup):
+        """Basic travel calculation with connected locations."""
+        server = campaign_state_setup["server"]
+        campaigns_dir = campaign_state_setup["campaigns_dir"]
+        campaign = campaign_state_setup["campaign"]
+
+        from gm_agent.storage.locations import LocationStore
+        loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
+        town = loc_store.create("Otari", description="Small town")
+        forest = loc_store.create("Darkwood Forest", description="Dense forest",
+                                  connected_locations=[town.id])
+        # Connect back
+        town.connected_locations.append(forest.id)
+        loc_store._save(town)
+
+        result = server.call_tool("calculate_travel_time", {
+            "from_location": "Otari",
+            "to_location": "Darkwood Forest",
+        })
+        assert result.success
+        assert "Otari" in result.data
+        assert "Darkwood Forest" in result.data
+        assert "miles" in result.data.lower()
+
+    def test_travel_time_difficult_terrain(self, campaign_state_setup):
+        """Difficult terrain should halve speed."""
+        server = campaign_state_setup["server"]
+        campaigns_dir = campaign_state_setup["campaigns_dir"]
+        campaign = campaign_state_setup["campaign"]
+
+        from gm_agent.storage.locations import LocationStore
+        loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
+        loc_store.create("A")
+        loc_store.create("B", connected_locations=["a"])
+
+        result = server.call_tool("calculate_travel_time", {
+            "from_location": "A",
+            "to_location": "B",
+            "terrain": "difficult",
+        })
+        assert result.success
+        assert "difficult" in result.data
+        assert "x0.5" in result.data
+
+    def test_travel_time_mounted(self, campaign_state_setup):
+        """Mounted travel uses 40ft speed."""
+        server = campaign_state_setup["server"]
+        campaigns_dir = campaign_state_setup["campaigns_dir"]
+        campaign = campaign_state_setup["campaign"]
+
+        from gm_agent.storage.locations import LocationStore
+        loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
+        loc_store.create("C")
+        loc_store.create("D", connected_locations=["c"])
+
+        result = server.call_tool("calculate_travel_time", {
+            "from_location": "C",
+            "to_location": "D",
+            "mounted": True,
+        })
+        assert result.success
+        assert "40 ft" in result.data
+        assert "Mounted" in result.data
+
+    def test_travel_time_forced_march(self, campaign_state_setup):
+        """Forced march should increase distance."""
+        server = campaign_state_setup["server"]
+        campaigns_dir = campaign_state_setup["campaigns_dir"]
+        campaign = campaign_state_setup["campaign"]
+
+        from gm_agent.storage.locations import LocationStore
+        loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
+        loc_store.create("E")
+        loc_store.create("F", connected_locations=["e"])
+
+        result = server.call_tool("calculate_travel_time", {
+            "from_location": "E",
+            "to_location": "F",
+            "forced_march": True,
+        })
+        assert result.success
+        assert "Forced March" in result.data
+        assert "Fort saves" in result.data
+
+    def test_travel_time_missing_location(self, campaign_state_setup):
+        """Should require both locations."""
+        server = campaign_state_setup["server"]
+        result = server.call_tool("calculate_travel_time", {
+            "from_location": "Otari",
+        })
+        assert not result.success
+
+
+class TestHazardDetection:
+    """Phase 4E: check_hazard_detection tool."""
+
+    def test_hazard_detection_no_party(self, campaign_state_setup):
+        """Without party perception, gives general info."""
+        server = campaign_state_setup["server"]
+        result = server.call_tool("check_hazard_detection", {
+            "stealth_dc": 25,
+        })
+        assert result.success
+        assert "25" in result.data
+        assert "Perception" in result.data
+
+    def test_hazard_detection_with_party(self, campaign_state_setup):
+        """With party perception data, categorizes PCs."""
+        import json
+        server = campaign_state_setup["server"]
+        result = server.call_tool("check_hazard_detection", {
+            "stealth_dc": 22,
+            "searching": True,
+            "party_perception": json.dumps({
+                "Valeros": 14,
+                "Ezren": 22,
+                "Merisiel": 25,
+            }),
+        })
+        assert result.success
+        # Ezren and Merisiel should auto-detect (searching + perception >= DC)
+        assert "Auto-Detect" in result.data
+        assert "Ezren" in result.data
+
+    def test_hazard_detection_scouting(self, campaign_state_setup):
+        """Scouting should add initiative bonus note."""
+        import json
+        server = campaign_state_setup["server"]
+        result = server.call_tool("check_hazard_detection", {
+            "stealth_dc": 20,
+            "scouting": True,
+            "party_perception": json.dumps({"Valeros": 15}),
+        })
+        assert result.success
+        assert "Scout" in result.data or "initiative" in result.data
+
+    def test_hazard_detection_unlikely(self, campaign_state_setup):
+        """Low perception PCs should be in 'unlikely' category."""
+        import json
+        server = campaign_state_setup["server"]
+        result = server.call_tool("check_hazard_detection", {
+            "stealth_dc": 30,
+            "party_perception": json.dumps({"Weakling": 5}),
+        })
+        assert result.success
+        assert "Unlikely" in result.data

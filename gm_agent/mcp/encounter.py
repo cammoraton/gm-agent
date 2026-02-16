@@ -317,6 +317,48 @@ def suggest_encounter(
     }
 
 
+def roll_random_encounter_budget(
+    party_level: int,
+    difficulty: str = "moderate",
+    party_size: int = 4,
+) -> dict:
+    """Calculate a random encounter XP budget and recommended creature range.
+
+    Args:
+        party_level: The party's average level
+        difficulty: Target difficulty (trivial, low, moderate, severe, extreme)
+        party_size: Number of players
+
+    Returns:
+        Dictionary with budget info and creature recommendations
+    """
+    adjustment = party_size - 4
+    budget = {
+        "trivial": 40 + adjustment * 10,
+        "low": 60 + adjustment * 15,
+        "moderate": 80 + adjustment * 20,
+        "severe": 120 + adjustment * 30,
+        "extreme": 160 + adjustment * 40,
+    }.get(difficulty.lower(), 80)
+
+    # Recommended creature level range
+    min_level = max(-1, party_level - 4)
+    max_level = party_level + 2 if difficulty in ("trivial", "low") else party_level + 4
+
+    # Estimate number of creatures
+    avg_xp = creature_xp(party_level, party_level)  # Level-equal creature = 40 XP
+    num_creatures = max(1, budget // avg_xp)
+
+    return {
+        "xp_budget": budget,
+        "difficulty": difficulty,
+        "party_level": party_level,
+        "party_size": party_size,
+        "recommended_creature_level": {"min": min_level, "max": max_level},
+        "estimated_creature_count": num_creatures,
+    }
+
+
 class EncounterServer(MCPServer):
     """MCP server for encounter evaluation tools."""
 
@@ -411,6 +453,38 @@ class EncounterServer(MCPServer):
                     ),
                 ],
             ),
+            ToolDef(
+                name="roll_random_encounter",
+                description="Calculate XP budget and creature recommendations for a random encounter. "
+                "Returns budget, recommended creature level range, and estimated count. "
+                "Combine with lookup_creature to fill the encounter.",
+                parameters=[
+                    ToolParameter(
+                        name="party_level", type="integer",
+                        description="Average level of the party",
+                    ),
+                    ToolParameter(
+                        name="difficulty", type="string",
+                        description="Target difficulty: trivial, low, moderate, severe, extreme",
+                        required=False, default="moderate",
+                    ),
+                    ToolParameter(
+                        name="party_size", type="integer",
+                        description="Number of players (default: 4)",
+                        required=False, default=4,
+                    ),
+                    ToolParameter(
+                        name="terrain", type="string",
+                        description="Optional terrain hint for creature filtering (e.g., 'forest', 'dungeon')",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="time_of_day", type="string",
+                        description="Optional time hint: day, night, dusk, dawn",
+                        required=False,
+                    ),
+                ],
+            ),
         ]
 
     def list_tools(self) -> list[ToolDef]:
@@ -425,6 +499,8 @@ class EncounterServer(MCPServer):
             return self._calculate_creature_xp(args)
         elif name == "get_encounter_advice":
             return self._get_encounter_advice(args)
+        elif name == "roll_random_encounter":
+            return self._roll_random_encounter(args)
         else:
             return ToolResult(success=False, error=f"Unknown tool: {name}")
 
@@ -526,6 +602,38 @@ class EncounterServer(MCPServer):
             return ToolResult(success=True, data={"advice": advice})
 
         return ToolResult(success=False, error=f"Unknown topic: {topic}")
+
+    def _roll_random_encounter(self, args: dict) -> ToolResult:
+        try:
+            party_level = args["party_level"]
+            difficulty = args.get("difficulty", "moderate")
+            party_size = args.get("party_size", 4)
+            terrain = args.get("terrain")
+            time_of_day = args.get("time_of_day")
+
+            result = roll_random_encounter_budget(party_level, difficulty, party_size)
+
+            lines = [
+                f"**Random Encounter** ({difficulty.title()})",
+                f"**XP Budget:** {result['xp_budget']}",
+                f"**Creature Level Range:** {result['recommended_creature_level']['min']} to {result['recommended_creature_level']['max']}",
+                f"**Estimated Creatures:** {result['estimated_creature_count']}",
+            ]
+
+            if terrain:
+                lines.append(f"**Terrain:** {terrain} — use `lookup_creature` with this filter")
+                result["terrain"] = terrain
+            if time_of_day:
+                lines.append(f"**Time:** {time_of_day}")
+                result["time_of_day"] = time_of_day
+                if time_of_day in ("night", "dusk"):
+                    lines.append("*Consider nocturnal creatures or undead.*")
+
+            lines.append("\n*Use `lookup_creature` to find creatures in the level range, then `evaluate_encounter` to validate.*")
+
+            return ToolResult(success=True, data="\n".join(lines))
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
 
     def close(self) -> None:
         """Clean up resources. No-op for stateless server."""

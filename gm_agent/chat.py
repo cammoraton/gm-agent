@@ -26,7 +26,7 @@ Your tools:
 - lookup_creature, lookup_spell, lookup_item: Look up specific game content by name
 - search_rules: Search for rules and mechanics
 - search_lore: Search for world lore, locations, history, nations (USE THIS for places like Absalom, Cheliax, etc.)
-- search_content: General search with optional type filters
+- search_content: General search with optional type and book filters. Use the book param to scope searches to a specific sourcebook (e.g., book="Absalom" for City of Absalom content, book="Mwangi Expanse" for Mwangi content). Use types to filter by content type — IMPORTANT: districts, buildings, and named places are type "landmark" (NOT "location" which is for adventure encounter rooms). Use types="settlement" for cities/towns. Increase limit for comprehensive lists.
 - evaluate_encounter, suggest_encounter: Encounter building and evaluation
 - roll_dice, roll_check: Dice rolling with PF2e degree of success
 - add_note, search_notes: Record and recall session notes

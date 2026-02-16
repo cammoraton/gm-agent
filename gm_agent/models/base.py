@@ -29,6 +29,7 @@ class LLMResponse(BaseModel):
     tool_calls: list[ToolCall] = []
     finish_reason: str = "stop"
     usage: dict[str, int] = {}
+    thinking: str | None = None
 
 
 class StreamChunk(BaseModel):
@@ -57,8 +58,18 @@ class LLMBackend(ABC):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        thinking: dict | None = None,
     ) -> LLMResponse:
-        """Send messages and get a response, optionally with tool definitions."""
+        """Send messages and get a response, optionally with tool definitions.
+
+        Args:
+            messages: Conversation messages.
+            tools: Optional tool definitions for tool use.
+            thinking: Optional extended thinking config. When supported by
+                      the backend, enables reasoning capture. Example:
+                      {"type": "enabled", "budget_tokens": 4096}.
+                      Backends that don't support thinking ignore this.
+        """
         pass
 
     def chat_stream(

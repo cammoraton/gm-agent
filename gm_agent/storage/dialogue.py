@@ -310,6 +310,15 @@ class DialogueStore:
             limit=limit,
         )
 
+    def delete_session_dialogues(self, session_id: str) -> int:
+        """Delete all dialogue entries for a session. Returns count deleted."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM dialogue WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
+        return cursor.rowcount
+
     def delete(self, dialogue_id: int) -> bool:
         """Delete a dialogue entry.
 

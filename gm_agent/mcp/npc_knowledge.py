@@ -7,6 +7,10 @@ from ..storage.knowledge import KnowledgeStore
 from ..storage.characters import CharacterStore
 from .base import MCPServer, ToolDef, ToolParameter, ToolResult
 
+# Well-known virtual character for party-level knowledge tracking
+PARTY_KNOWLEDGE_ID = "__party__"
+PARTY_KNOWLEDGE_NAME = "The Party"
+
 
 class NPCKnowledgeServer(MCPServer):
     """MCP server for NPC knowledge management.
@@ -196,6 +200,84 @@ class NPCKnowledgeServer(MCPServer):
                     ),
                 ],
             ),
+            # --- Party knowledge tools ---
+            ToolDef(
+                name="add_party_knowledge",
+                description=(
+                    "Record something the party has learned. Use this to track information "
+                    "the players have discovered, so the GM doesn't accidentally reveal things "
+                    "the party doesn't know yet."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="content",
+                        type="string",
+                        description="What the party learned",
+                    ),
+                    ToolParameter(
+                        name="source",
+                        type="string",
+                        description="How they learned it (e.g., 'NPC told them', 'found document', 'overheard')",
+                        required=False,
+                        default="",
+                    ),
+                    ToolParameter(
+                        name="tags",
+                        type="string",
+                        description="Comma-separated tags (e.g., 'quest,main_plot,npc_voz')",
+                        required=False,
+                        default="",
+                    ),
+                    ToolParameter(
+                        name="importance",
+                        type="integer",
+                        description="How important (1-10, default 5)",
+                        required=False,
+                        default=5,
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="query_party_knowledge",
+                description="Search what the party knows. Use to check before revealing information.",
+                parameters=[
+                    ToolParameter(
+                        name="query",
+                        type="string",
+                        description="Search query to match against party knowledge content",
+                        required=False,
+                        default="",
+                    ),
+                    ToolParameter(
+                        name="tags",
+                        type="string",
+                        description="Comma-separated tags to filter by",
+                        required=False,
+                        default="",
+                    ),
+                    ToolParameter(
+                        name="limit",
+                        type="integer",
+                        description="Maximum number of results",
+                        required=False,
+                        default=20,
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="has_party_learned",
+                description=(
+                    "Quick check: does the party know about a topic? Returns true/false "
+                    "plus any matching knowledge entries."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="topic",
+                        type="string",
+                        description="The topic to check (e.g., 'mayor is corrupt', 'secret passage')",
+                    ),
+                ],
+            ),
         ]
 
     def list_tools(self) -> list[ToolDef]:
@@ -213,6 +295,12 @@ class NPCKnowledgeServer(MCPServer):
                 return self._what_will_npc_share(args)
             elif name == "npc_learns":
                 return self._npc_learns(args)
+            elif name == "add_party_knowledge":
+                return self._add_party_knowledge(args)
+            elif name == "query_party_knowledge":
+                return self._query_party_knowledge(args)
+            elif name == "has_party_learned":
+                return self._has_party_learned(args)
             else:
                 return ToolResult(success=False, error=f"Unknown tool: {name}")
         except Exception as e:
@@ -378,6 +466,92 @@ class NPCKnowledgeServer(MCPServer):
             "source": args.get("source", ""),
             "importance": 5,
         })
+
+    # -------------------------------------------------------------------
+    # Party knowledge tools
+    # -------------------------------------------------------------------
+
+    def _add_party_knowledge(self, args: dict[str, Any]) -> ToolResult:
+        """Record something the party has learned."""
+        content = args.get("content")
+        if not content:
+            return ToolResult(success=False, error="content is required")
+
+        tags_str = args.get("tags", "")
+        tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+        entry = self.knowledge.add_knowledge(
+            character_id=PARTY_KNOWLEDGE_ID,
+            character_name=PARTY_KNOWLEDGE_NAME,
+            content=content,
+            knowledge_type="fact",
+            sharing_condition="free",
+            source=args.get("source", ""),
+            importance=args.get("importance", 5),
+            tags=tags,
+        )
+
+        return ToolResult(
+            success=True,
+            data=f"Party knowledge recorded: \"{content}\" (importance: {entry.importance})"
+        )
+
+    def _query_party_knowledge(self, args: dict[str, Any]) -> ToolResult:
+        """Search what the party knows."""
+        tags_str = args.get("tags", "")
+        tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
+        limit = args.get("limit", 20)
+
+        knowledge = self.knowledge.query_knowledge(
+            character_id=PARTY_KNOWLEDGE_ID,
+            tags=tags,
+            limit=limit,
+        )
+
+        query = args.get("query", "")
+        if query:
+            query_lower = query.lower()
+            knowledge = [k for k in knowledge if query_lower in k.content.lower()]
+
+        if not knowledge:
+            return ToolResult(success=True, data="The party has no matching knowledge.")
+
+        lines = [f"**Party Knowledge** ({len(knowledge)} entries)"]
+        for k in knowledge:
+            tags_display = f" [{', '.join(k.tags)}]" if k.tags else ""
+            lines.append(f"\n[{k.id}] (importance: {k.importance}){tags_display}")
+            lines.append(f"  \"{k.content}\"")
+            if k.source:
+                lines.append(f"  Source: {k.source}")
+
+        return ToolResult(success=True, data="\n".join(lines))
+
+    def _has_party_learned(self, args: dict[str, Any]) -> ToolResult:
+        """Check if the party knows about a topic."""
+        topic = args.get("topic", "")
+        if not topic:
+            return ToolResult(success=False, error="topic is required")
+
+        # Get all party knowledge and search
+        all_knowledge = self.knowledge.query_knowledge(
+            character_id=PARTY_KNOWLEDGE_ID,
+            limit=1000,
+        )
+
+        topic_lower = topic.lower()
+        matches = [k for k in all_knowledge if topic_lower in k.content.lower()]
+
+        if not matches:
+            return ToolResult(
+                success=True,
+                data=f"**No** - The party has not learned about '{topic}'.",
+            )
+
+        lines = [f"**Yes** - The party knows about '{topic}' ({len(matches)} entries):"]
+        for k in matches[:5]:
+            lines.append(f"  - \"{k.content}\" (source: {k.source or 'unknown'})")
+
+        return ToolResult(success=True, data="\n".join(lines))
 
     def close(self) -> None:
         """Close resources."""

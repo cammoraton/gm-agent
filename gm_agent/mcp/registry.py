@@ -73,6 +73,15 @@ SERVERS: dict[str, ServerInfo] = {
         celery_eligible=True,
         requires_campaign=True,
     ),
+    "creature-modifier": ServerInfo(
+        stateless=True,
+        celery_eligible=True,
+    ),
+    "subsystem": ServerInfo(
+        stateless=False,
+        celery_eligible=True,
+        requires_campaign=True,
+    ),
     "foundry-vtt": ServerInfo(
         stateless=False,
         celery_eligible=False,  # Must stay in API (WebSocket)
@@ -91,6 +100,7 @@ def _build_tool_mapping() -> None:
     from .dice import DiceServer
     from .encounter import EncounterServer
     from .notes import NotesServer
+    from .creature_modifier import CreatureModifierServer
 
     # Map tools from stateless servers (safe to instantiate)
     server_classes = {
@@ -98,6 +108,7 @@ def _build_tool_mapping() -> None:
         "dice": DiceServer,
         "encounter": EncounterServer,
         "notes": NotesServer,
+        "creature-modifier": CreatureModifierServer,
     }
 
     for server_name, server_class in server_classes.items():
@@ -167,6 +178,9 @@ def _build_tool_mapping() -> None:
         "query_npc_knowledge",
         "what_will_npc_share",
         "npc_learns",
+        "add_party_knowledge",
+        "query_party_knowledge",
+        "has_party_learned",
     ]
     for tool in npc_knowledge_tools:
         TOOL_TO_SERVER[tool] = "npc-knowledge"
@@ -181,6 +195,17 @@ def _build_tool_mapping() -> None:
     ]
     for tool in rumors_tools:
         TOOL_TO_SERVER[tool] = "rumors"
+
+    # Manually add subsystem tools (requires campaign_id)
+    subsystem_tools = [
+        "start_subsystem",
+        "subsystem_action",
+        "get_subsystem_state",
+        "end_subsystem",
+        "list_subsystems",
+    ]
+    for tool in subsystem_tools:
+        TOOL_TO_SERVER[tool] = "subsystem"
 
     # Foundry VTT tools will be added dynamically when server connects
 

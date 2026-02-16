@@ -274,19 +274,24 @@ class TestPF2eRAGServerWithMock:
     """Tests for PF2eRAGServer using mocked PathfinderSearch."""
 
     def test_list_tools(self, mock_pathfinder_search: MockPathfinderSearch):
-        """PF2eRAGServer should list 5 tools."""
+        """PF2eRAGServer should list all tools."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
         tools = server.list_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 16
         tool_names = [t.name for t in tools]
         assert "lookup_creature" in tool_names
         assert "lookup_spell" in tool_names
         assert "lookup_item" in tool_names
+        assert "lookup_npc" in tool_names
         assert "search_rules" in tool_names
         assert "search_content" in tool_names
+        assert "search_pages" in tool_names
+        assert "get_db_stats" in tool_names
+        assert "find_page" in tool_names
+        assert "browse_book" in tool_names
 
     def test_tool_definitions_valid(self, mock_pathfinder_search: MockPathfinderSearch):
         """All PF2eRAGServer tools should have valid definitions."""
@@ -379,17 +384,51 @@ class TestPF2eRAGServerWithMock:
         assert "Unknown tool" in result.error
 
     def test_format_results(self, mock_pathfinder_search: MockPathfinderSearch):
-        """PF2eRAGServer should format results with headers."""
+        """PF2eRAGServer should format results with headers including book."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
         result = server.call_tool("lookup_creature", {"name": "goblin"})
 
-        # Should contain formatted result
+        # Should contain formatted result with book info
         assert result.success is True
         output = result.data if isinstance(result.data, str) else result.to_string()
         assert "Goblin" in output
-        assert "Core Rulebook" in output  # From mock
+        assert "Core Rulebook" in output  # book field from mock
+
+    def test_search_pages(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_pages should call PathfinderSearch.search_pages."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_pages", {"query": "goblin tactics"})
+
+        assert result.success is True
+        output = result.data if isinstance(result.data, str) else result.to_string()
+        assert "Core Rulebook" in output
+
+    def test_get_db_stats(self, mock_pathfinder_search: MockPathfinderSearch):
+        """get_db_stats should return formatted statistics."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("get_db_stats", {})
+
+        assert result.success is True
+        output = result.data if isinstance(result.data, str) else result.to_string()
+        assert "1,000" in output  # total_entities
+        assert "schema v4" in output
+
+    def test_lookup_npc(self, mock_pathfinder_search: MockPathfinderSearch):
+        """lookup_npc should search both NPC and creature categories and merge results."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("lookup_npc", {"name": "Goblin"})
+
+        assert result.success is True
+        # Should have searched multiple times (npc category, creature category, pages)
+        assert len(mock_pathfinder_search.calls) >= 2
 
     def test_get_tool_method(self, mock_pathfinder_search: MockPathfinderSearch):
         """PF2eRAGServer.get_tool should find tools by name."""
@@ -403,6 +442,100 @@ class TestPF2eRAGServerWithMock:
 
         tool = server.get_tool("nonexistent")
         assert tool is None
+
+    def test_find_page(self, mock_pathfinder_search: MockPathfinderSearch):
+        """find_page should return page references for a term."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("find_page", {"term": "Fireball"})
+
+        assert result.success is True
+        output = result.data
+        assert "Fireball" in output
+        assert "p.326" in output
+        assert "Player Core" in output
+
+    def test_find_page_with_book(self, mock_pathfinder_search: MockPathfinderSearch):
+        """find_page should accept optional book filter."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("find_page", {"term": "Fireball", "book": "Player Core"})
+
+        assert result.success is True
+
+    def test_browse_book_list(self, mock_pathfinder_search: MockPathfinderSearch):
+        """browse_book with no args lists all books."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("browse_book", {})
+
+        assert result.success is True
+        output = result.data
+        assert "Player Core" in output
+        assert "GM Core" in output
+        assert "Monster Core" in output
+        assert "Available Books" in output
+
+    def test_browse_book_filter_by_type(self, mock_pathfinder_search: MockPathfinderSearch):
+        """browse_book with book_type filters the book list."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("browse_book", {"book_type": "bestiary"})
+
+        assert result.success is True
+        output = result.data
+        assert "Monster Core" in output
+        assert "Player Core" not in output
+
+    def test_browse_book_chapters(self, mock_pathfinder_search: MockPathfinderSearch):
+        """browse_book with book shows book summary + chapter TOC."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("browse_book", {"book": "Player Core"})
+
+        assert result.success is True
+        output = result.data
+        assert "Player Core" in output
+        assert "Table of Contents" in output
+        assert "Introduction" in output
+        assert "Spells" in output
+
+    def test_browse_book_chapter_summary(self, mock_pathfinder_search: MockPathfinderSearch):
+        """browse_book with book+chapter shows chapter summary + page summaries."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "browse_book",
+            {"book": "Player Core", "chapter": "Spells"},
+        )
+
+        assert result.success is True
+        output = result.data
+        # Chapter summary info
+        assert "Spells" in output
+        assert "280" in output
+        assert "420" in output
+        # Page-level summaries
+        assert "p.280" in output
+        assert "p.281" in output
+
+    def test_browse_book_resolves_name(self, mock_pathfinder_search: MockPathfinderSearch):
+        """browse_book resolves user-friendly book names."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        # Should resolve "Player" to "Player Core" via contains match
+        result = server.call_tool("browse_book", {"book": "Player"})
+
+        assert result.success is True
+        output = result.data
+        assert "Player Core" in output
 
 
 class TestToolDefConversions:

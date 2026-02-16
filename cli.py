@@ -124,6 +124,519 @@ def campaign_delete(campaign_id: str):
         sys.exit(1)
 
 
+@campaign.command("generate")
+@click.argument("campaign_id")
+@click.argument("ap_name")
+@click.option(
+    "--backend",
+    type=click.Choice(["ollama", "openai", "anthropic", "openrouter"]),
+    default=None,
+    help="LLM backend to use (default: from LLM_BACKEND env)",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed progress")
+def campaign_generate(campaign_id: str, ap_name: str, backend: str | None, verbose: bool):
+    """Generate campaign background and search terms from an AP.
+
+    Uses book/chapter summaries to generate a GM briefing and a list
+    of search terms for query-based world context seeding.
+
+    Updates campaign.json with the generated background and search terms.
+
+    \b
+    Examples:
+      gm campaign generate kingmaker "Kingmaker"
+      gm campaign generate my-campaign "Curtain Call" --backend openrouter
+    """
+    import logging
+
+    from gm_agent.config import RAG_DB_PATH
+    from gm_agent.prep.knowledge import generate_background, resolve_ap_books
+    from gm_agent.rag.search import PathfinderSearch
+
+    if verbose:
+        logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
+    # Validate campaign exists
+    c = campaign_store.get(campaign_id)
+    if not c:
+        click.echo(f"Campaign '{campaign_id}' not found.", err=True)
+        sys.exit(1)
+
+    # Initialize backend
+    try:
+        llm = get_backend(backend) if backend else get_backend()
+        click.echo(f"Backend: {llm.get_model_name()}")
+    except Exception as e:
+        click.echo(f"Error initializing LLM backend: {e}", err=True)
+        sys.exit(1)
+
+    # Initialize search
+    try:
+        search = PathfinderSearch(db_path=str(RAG_DB_PATH))
+    except Exception as e:
+        click.echo(f"Error opening search database: {e}", err=True)
+        sys.exit(1)
+
+    try:
+        # Show what books were resolved
+        books = resolve_ap_books(search, ap_name)
+        if not books:
+            click.echo(f"No books found matching '{ap_name}' in the search database.", err=True)
+            sys.exit(1)
+
+        click.echo(f"Found {len(books)} book(s) for '{ap_name}':")
+        for b in books:
+            click.echo(f"  {b['name']} ({b['total_pages']} pages, {len(b['chapters'])} chapters)")
+
+        result = generate_background(
+            search, llm, ap_name,
+            on_progress=click.echo,
+        )
+
+        if not result or not result.get("background"):
+            click.echo("Failed to generate background.", err=True)
+            sys.exit(1)
+
+        # Update campaign
+        c.background = result["background"]
+        if not c.books:
+            c.books = [b["name"] for b in books]
+        prefs = c.preferences or {}
+        prefs["search_terms"] = result["search_terms"]
+        c.preferences = prefs
+        campaign_store.update(c)
+
+        click.echo(f"\nBackground ({len(result['background'])} chars):")
+        click.echo(result["background"])
+        click.echo(f"\nSearch terms ({len(result['search_terms'])}):")
+        for term in result["search_terms"]:
+            click.echo(f"  - {term}")
+        click.echo(f"\nUpdated campaign: {campaign_id}")
+
+    except Exception as e:
+        click.echo(f"Generation failed: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    finally:
+        search.close()
+
+
+@campaign.command("prep")
+@click.argument("campaign_id")
+@click.option("--books", "-b", multiple=True, help="Book names to prep from (repeatable)")
+@click.option(
+    "--backend",
+    type=click.Choice(["ollama", "openai", "anthropic", "openrouter"]),
+    default=None,
+    help="LLM backend to use (default: from LLM_BACKEND env)",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed progress")
+@click.option("--from", "from_campaign", default=None, help="Copy prep from existing campaign")
+@click.option("--background", default=None, help="Set campaign background text (also used for world context)")
+@click.option("--search-terms", default=None, help="Comma-separated search terms for query-based world context")
+@click.option("--skip", multiple=True, type=click.Choice(["party", "npc", "subsystem", "world"]), help="Steps to skip (repeatable)")
+@click.option("--generate-background", "gen_bg", is_flag=True, help="Generate background from AP books before prepping")
+def campaign_prep(
+    campaign_id: str,
+    books: tuple[str, ...],
+    backend: str | None,
+    verbose: bool,
+    from_campaign: str | None,
+    background: str | None,
+    search_terms: str | None,
+    skip: tuple[str, ...],
+    gen_bg: bool = False,
+):
+    """Prep a campaign -- seed knowledge from associated books.
+
+    Runs LLM-driven synthesis to populate the campaign's knowledge store
+    with party knowledge, NPC knowledge, and world context.
+
+    Use --from to copy prep data from an existing campaign instead of
+    re-running the full synthesis pipeline.
+
+    \b
+    Examples:
+      gm campaign prep my-campaign -b "Player Core" -b "Abomination Vaults"
+      gm campaign prep my-campaign -b "Player Core" --backend anthropic -v
+      gm campaign prep my-campaign --from source-campaign
+      gm campaign prep kingmaker -b Kingmaker --skip npc --backend openrouter
+      gm campaign prep kingmaker -b Kingmaker --generate-background --skip npc
+    """
+    import logging
+    import shutil
+
+    from gm_agent.config import CAMPAIGNS_DIR
+
+    if verbose:
+        logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
+    # Validate campaign exists
+    c = campaign_store.get(campaign_id)
+    if not c:
+        click.echo(f"Campaign '{campaign_id}' not found.", err=True)
+        sys.exit(1)
+
+    # Update campaign background if provided
+    if background is not None:
+        c.background = background
+        campaign_store.update(c)
+        click.echo(f"Updated campaign background.")
+
+    # Handle --from: copy knowledge.db from source campaign
+    if from_campaign:
+        source = campaign_store.get(from_campaign)
+        if not source:
+            click.echo(f"Source campaign '{from_campaign}' not found.", err=True)
+            sys.exit(1)
+
+        source_kb = CAMPAIGNS_DIR / from_campaign / "knowledge.db"
+        if not source_kb.exists():
+            click.echo(f"Source campaign has no knowledge.db to copy.", err=True)
+            sys.exit(1)
+
+        target_dir = CAMPAIGNS_DIR / campaign_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_kb = target_dir / "knowledge.db"
+
+        shutil.copy2(str(source_kb), str(target_kb))
+        click.echo(f"Copied knowledge.db from '{from_campaign}' to '{campaign_id}'")
+        return
+
+    from gm_agent.config import RAG_DB_PATH
+    from gm_agent.prep import PrepPipeline
+    from gm_agent.rag.search import PathfinderSearch
+
+    # Get books from args or campaign config
+    book_list = list(books)
+    if not book_list and hasattr(c, "books") and c.books:
+        book_list = c.books
+    if not book_list:
+        click.echo("No books specified. Use -b to specify books to prep from.", err=True)
+        sys.exit(1)
+
+    # Resolve search terms from args or campaign preferences
+    terms_list = None
+    if search_terms:
+        terms_list = [t.strip() for t in search_terms.split(",") if t.strip()]
+    elif c.preferences.get("search_terms"):
+        terms_list = c.preferences["search_terms"]
+
+    # Resolve background from args or campaign config
+    bg = background or c.background or ""
+
+    # Generate background from AP if requested
+    if gen_bg and not bg:
+        from gm_agent.prep.knowledge import generate_background
+
+        try:
+            search_for_gen = PathfinderSearch(db_path=str(RAG_DB_PATH))
+            ap_name = book_list[0]  # Use first book as AP name
+            click.echo(f"\nGenerating background from '{ap_name}'...")
+            result = generate_background(search_for_gen, llm, ap_name, on_progress=click.echo)
+            search_for_gen.close()
+
+            if result and result.get("background"):
+                bg = result["background"]
+                c.background = bg
+                if not terms_list and result.get("search_terms"):
+                    terms_list = result["search_terms"]
+                    prefs = c.preferences or {}
+                    prefs["search_terms"] = terms_list
+                    c.preferences = prefs
+                campaign_store.update(c)
+                click.echo(f"Generated background ({len(bg)} chars) with {len(terms_list or [])} search terms\n")
+        except Exception as e:
+            click.echo(f"Warning: Background generation failed: {e}", err=True)
+            click.echo("Continuing with prep...\n")
+
+    # Initialize backend
+    try:
+        llm = get_backend(backend) if backend else get_backend()
+        click.echo(f"Backend: {llm.get_model_name()}")
+    except Exception as e:
+        click.echo(f"Error initializing LLM backend: {e}", err=True)
+        sys.exit(1)
+
+    # Initialize search
+    try:
+        search = PathfinderSearch(db_path=str(RAG_DB_PATH))
+    except Exception as e:
+        click.echo(f"Error opening search database: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Prepping campaign: {c.name} ({campaign_id})")
+    click.echo(f"Books: {', '.join(book_list)}")
+    if terms_list:
+        click.echo(f"Search terms: {', '.join(terms_list)}")
+    if skip:
+        click.echo(f"Skipping: {', '.join(skip)}")
+    click.echo()
+
+    try:
+        pipeline = PrepPipeline(
+            campaign_id=campaign_id,
+            llm=llm,
+            search=search,
+            on_progress=click.echo,
+        )
+        result = pipeline.run(
+            book_list,
+            search_terms=terms_list,
+            campaign_background=bg,
+            skip_steps=list(skip),
+        )
+
+        # Print summary
+        click.echo(f"\n{'=' * 40}")
+        click.echo(f"Prep complete ({result.duration_ms / 1000:.1f}s)")
+        click.echo(f"  Books resolved: {len(result.books_resolved)}")
+        for b in result.books_resolved:
+            click.echo(f"    - {b['name']} ({b['book_type']}, {b['entity_count']} entities)")
+
+        click.echo(f"\n  Party knowledge: {result.party_knowledge_count} entries", nl=False)
+        if result.party_duration_ms:
+            click.echo(f" ({result.party_duration_ms / 1000:.1f}s)")
+        else:
+            click.echo()
+
+        click.echo(f"  NPC knowledge:   {result.npc_knowledge_count} entries", nl=False)
+        if result.npc_duration_ms:
+            click.echo(f" ({result.npc_duration_ms / 1000:.1f}s)")
+        else:
+            click.echo()
+
+        click.echo(f"  Subsystem rules: {result.subsystem_knowledge_count} entries", nl=False)
+        if result.subsystem_duration_ms:
+            click.echo(f" ({result.subsystem_duration_ms / 1000:.1f}s)")
+        else:
+            click.echo()
+        if result.subsystems_detected:
+            click.echo(f"    Detected: {', '.join(result.subsystems_detected)}")
+
+        click.echo(f"  World context:   {result.world_context_count} entries", nl=False)
+        if result.world_duration_ms:
+            click.echo(f" ({result.world_duration_ms / 1000:.1f}s)")
+        else:
+            click.echo()
+
+        click.echo(f"  Total:           {result.total_count} entries")
+
+        if result.npc_dedup_merges:
+            click.echo(f"\n  NPC dedup:       {result.npc_dedup_merges} merges ({result.npc_dedup_entries_moved} entries moved)")
+
+        # Token summary
+        if result.total_tokens:
+            click.echo(f"\n  Tokens: {result.total_prompt_tokens:,} prompt + {result.total_completion_tokens:,} completion = {result.total_tokens:,} total")
+            # Estimate cost (rough: $0.15/M input, $0.60/M output for gpt-4o-mini)
+            est_cost = (result.total_prompt_tokens * 0.15 + result.total_completion_tokens * 0.60) / 1_000_000
+            click.echo(f"  Est. cost: ~${est_cost:.2f} (gpt-4o-mini rates)")
+
+        if result.errors:
+            click.echo(f"\nErrors ({len(result.errors)}):", err=True)
+            for err in result.errors:
+                click.echo(f"  - {err}", err=True)
+
+    except Exception as e:
+        click.echo(f"Prep failed: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    finally:
+        search.close()
+
+
+@campaign.command("dedup")
+@click.argument("campaign_id")
+@click.option("--dry-run", is_flag=True, help="Show what would be merged without making changes")
+def campaign_dedup(campaign_id: str, dry_run: bool):
+    """Deduplicate NPC names in the knowledge store.
+
+    Merges knowledge entries where the same NPC appears under multiple
+    name variants (e.g., "Oleg" and "Oleg Leveton", typos, title variants).
+
+    \b
+    Examples:
+      gm campaign dedup kingmaker
+      gm campaign dedup kingmaker --dry-run
+    """
+    from gm_agent.config import CAMPAIGNS_DIR
+    from gm_agent.storage.knowledge import KnowledgeStore
+
+    c = campaign_store.get(campaign_id)
+    if not c:
+        click.echo(f"Campaign '{campaign_id}' not found.", err=True)
+        sys.exit(1)
+
+    kb_path = CAMPAIGNS_DIR / campaign_id / "knowledge.db"
+    if not kb_path.exists():
+        click.echo(f"No knowledge.db found for campaign '{campaign_id}'.", err=True)
+        sys.exit(1)
+
+    knowledge = KnowledgeStore(campaign_id, base_dir=CAMPAIGNS_DIR)
+
+    if dry_run:
+        # Just find and display groups without modifying
+        from gm_agent.prep.knowledge import (
+            _names_match,
+            _pick_canonical_name,
+        )
+
+        import sqlite3
+        conn = knowledge._get_conn()
+        rows = conn.execute("""
+            SELECT character_id, character_name, COUNT(*) as cnt
+            FROM knowledge WHERE character_id != '__party__'
+            GROUP BY character_id ORDER BY character_name
+        """).fetchall()
+        npcs = [(r[0], r[1], r[2]) for r in rows]
+
+        parent: dict[str, str] = {r[0]: r[0] for r in npcs}
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i, (id_a, name_a, _) in enumerate(npcs):
+            for id_b, name_b, _ in npcs[i + 1:]:
+                if find(id_a) == find(id_b):
+                    continue
+                if _names_match(name_a, name_b):
+                    union(id_a, id_b)
+
+        groups: dict[str, list] = {}
+        for cid, cname, cnt in npcs:
+            root = find(cid)
+            groups.setdefault(root, []).append((cid, cname, cnt))
+
+        merge_groups = {k: v for k, v in groups.items() if len(v) > 1}
+
+        if not merge_groups:
+            click.echo("No duplicate NPC names found.")
+        else:
+            click.echo(f"Found {len(merge_groups)} merge groups (dry run):\n")
+            for members in merge_groups.values():
+                canonical_id, canonical_name = _pick_canonical_name(members)
+                others = [f"{n} ({c})" for cid, n, c in members if cid != canonical_id]
+                click.echo(f"  {', '.join(others)} → {canonical_name}")
+    else:
+        from gm_agent.prep.knowledge import deduplicate_npc_names
+        result = deduplicate_npc_names(knowledge, on_progress=click.echo)
+
+        if result["merges"] == 0:
+            click.echo("No duplicate NPC names found.")
+        else:
+            click.echo(f"\nDone: {result['merges']} merges, {result['entries_moved']} entries moved")
+
+    knowledge.close()
+
+
+@campaign.command("crunch")
+@click.argument("campaign_id")
+@click.argument("session_id", required=False)
+@click.option(
+    "--backend",
+    type=click.Choice(["ollama", "openai", "anthropic", "openrouter"]),
+    default=None,
+    help="LLM backend to use (default: from LLM_BACKEND env)",
+)
+@click.option("--steps", "-s", multiple=True, help="Steps to run (events,dialogue,knowledge,arc)")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed progress")
+def campaign_crunch(
+    campaign_id: str,
+    session_id: str | None,
+    backend: str | None,
+    steps: tuple[str, ...],
+    verbose: bool,
+):
+    """Post-process a session to update world state.
+
+    Extracts events, dialogue, knowledge updates, and arc progress from
+    a completed session transcript using LLM synthesis.
+
+    If no session_id is provided, uses the most recent archived session.
+
+    \b
+    Examples:
+      gm campaign crunch my-campaign
+      gm campaign crunch my-campaign abc12345
+      gm campaign crunch my-campaign -s events -s dialogue --backend anthropic -v
+    """
+    import logging
+
+    from gm_agent.prep import CrunchPipeline
+
+    if verbose:
+        logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
+    # Validate campaign exists
+    c = campaign_store.get(campaign_id)
+    if not c:
+        click.echo(f"Campaign '{campaign_id}' not found.", err=True)
+        sys.exit(1)
+
+    # Find the session
+    if session_id:
+        session = session_store.get(campaign_id, session_id)
+        if not session:
+            click.echo(f"Session '{session_id}' not found.", err=True)
+            sys.exit(1)
+    else:
+        # Use most recent archived session
+        sessions = session_store.list(campaign_id)
+        if not sessions:
+            click.echo("No archived sessions found.", err=True)
+            sys.exit(1)
+        session = sessions[-1]
+        click.echo(f"Using most recent session: {session.id}")
+
+    # Initialize backend
+    try:
+        llm = get_backend(backend) if backend else get_backend()
+        click.echo(f"Backend: {llm.get_model_name()}")
+    except Exception as e:
+        click.echo(f"Error initializing LLM backend: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Crunching session {session.id} ({len(session.turns)} turns)")
+    click.echo()
+
+    try:
+        pipeline = CrunchPipeline(campaign_id=campaign_id, llm=llm)
+        step_list = list(steps) if steps else None
+        result = pipeline.run(session, steps=step_list)
+
+        # Print summary
+        click.echo(f"\nCrunch complete ({result.duration_ms / 1000:.1f}s)")
+        click.echo(f"  Events:    {result.events_count}")
+        click.echo(f"  Dialogue:  {result.dialogue_count}")
+        click.echo(f"  Knowledge: {result.knowledge_count}")
+        click.echo(f"  Arc:       {'updated' if result.arc_updated else 'unchanged'}")
+        click.echo(f"  Total:     {result.total_count} entries")
+
+        if result.errors:
+            click.echo(f"\nErrors ({len(result.errors)}):", err=True)
+            for err in result.errors:
+                click.echo(f"  - {err}", err=True)
+
+    except Exception as e:
+        click.echo(f"Crunch failed: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    finally:
+        pipeline.close()
+
+
 # ============================================================================
 # Session commands
 # ============================================================================

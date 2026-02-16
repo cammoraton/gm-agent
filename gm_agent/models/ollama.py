@@ -57,6 +57,7 @@ class OllamaBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        thinking: dict | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
 

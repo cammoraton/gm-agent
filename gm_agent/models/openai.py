@@ -77,8 +77,16 @@ class OpenAIBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        thinking: dict | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
+
+        Args:
+            messages: Conversation messages.
+            tools: Optional tool definitions.
+            thinking: Optional reasoning config. For OpenRouter with Anthropic
+                      models, pass {"type": "enabled", "budget_tokens": N}.
+                      Mapped to provider-specific params as needed.
 
         Includes retry logic for transient connection failures.
 
@@ -107,6 +115,9 @@ class OpenAIBackend(LLMBackend):
                 }
                 if openai_tools:
                     kwargs["tools"] = openai_tools
+                if thinking:
+                    # OpenRouter passes provider-specific params via extra_body
+                    kwargs["extra_body"] = {"thinking": thinking}
 
                 response = self.client.chat.completions.create(**kwargs)
                 return self._parse_response(response)
@@ -170,6 +181,14 @@ class OpenAIBackend(LLMBackend):
         message = choice.message
         content = message.content or ""
 
+        # Extract reasoning/thinking content if present
+        # OpenRouter returns this for models that support reasoning
+        # (Anthropic models, DeepSeek R1, o1/o3, etc.)
+        thinking_text = None
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning:
+            thinking_text = reasoning
+
         # Parse tool calls if present
         tool_calls = []
         if message.tool_calls:
@@ -210,6 +229,7 @@ class OpenAIBackend(LLMBackend):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            thinking=thinking_text,
         )
 
     def chat_stream(

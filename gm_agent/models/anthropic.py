@@ -62,8 +62,15 @@ class AnthropicBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        thinking: dict | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
+
+        Args:
+            messages: Conversation messages.
+            tools: Optional tool definitions.
+            thinking: Optional extended thinking config, e.g.
+                      {"type": "enabled", "budget_tokens": 4096}.
 
         Includes retry logic for transient connection failures.
 
@@ -104,6 +111,8 @@ class AnthropicBackend(LLMBackend):
                     kwargs["system"] = system_msg
                 if anthropic_tools:
                     kwargs["tools"] = anthropic_tools
+                if thinking:
+                    kwargs["thinking"] = thinking
 
                 response = self.client.messages.create(**kwargs)
                 return self._parse_response(response)
@@ -166,12 +175,15 @@ class AnthropicBackend(LLMBackend):
     def _parse_response(self, response) -> LLMResponse:
         """Parse Anthropic response into LLMResponse."""
         content_text = ""
+        thinking_text = ""
         tool_calls = []
 
         # Anthropic responses can have mixed content blocks
         for block in response.content:
             if block.type == "text":
                 content_text += block.text
+            elif block.type == "thinking":
+                thinking_text += block.thinking
             elif block.type == "tool_use":
                 tool_calls.append(
                     ToolCall(
@@ -202,6 +214,7 @@ class AnthropicBackend(LLMBackend):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            thinking=thinking_text or None,
         )
 
     def chat_stream(

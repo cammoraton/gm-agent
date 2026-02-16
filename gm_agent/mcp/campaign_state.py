@@ -3,12 +3,16 @@
 from typing import Any
 
 from ..config import CAMPAIGNS_DIR
+from ..propagation import PropagationBus
+from ..storage.ap_progress import APProgressStore
 from ..storage.campaign import campaign_store
 from ..storage.session import session_store
+from ..storage.treasure import TreasureStore, TREASURE_BY_LEVEL
 from ..storage.history import HistoryIndex
 from ..storage.characters import CharacterStore
 from ..storage.dialogue import DialogueStore
 from ..storage.factions import FactionStore
+from ..storage.knowledge import KnowledgeStore
 from ..storage.locations import LocationStore
 from ..storage.secrets import SecretStore
 from ..storage.schemas import SceneState, Relationship
@@ -32,8 +36,12 @@ class CampaignStateServer(MCPServer):
         self._character_store: CharacterStore | None = None
         self._dialogue_store: DialogueStore | None = None
         self._faction_store: FactionStore | None = None
+        self._knowledge_store: KnowledgeStore | None = None
         self._location_store: LocationStore | None = None
         self._secret_store: SecretStore | None = None
+        self._propagation_bus: PropagationBus | None = None
+        self._ap_progress_store: APProgressStore | None = None
+        self._treasure_store: TreasureStore | None = None
         self._tools = self._build_tools()
 
     @property
@@ -77,6 +85,39 @@ class CampaignStateServer(MCPServer):
         if self._secret_store is None:
             self._secret_store = SecretStore(self.campaign_id, base_dir=CAMPAIGNS_DIR)
         return self._secret_store
+
+    @property
+    def knowledge(self) -> KnowledgeStore:
+        """Lazy-load knowledge store."""
+        if self._knowledge_store is None:
+            self._knowledge_store = KnowledgeStore(self.campaign_id, base_dir=CAMPAIGNS_DIR)
+        return self._knowledge_store
+
+    @property
+    def ap_progress(self) -> APProgressStore:
+        """Lazy-load AP progress store."""
+        if self._ap_progress_store is None:
+            self._ap_progress_store = APProgressStore(self.campaign_id, base_dir=CAMPAIGNS_DIR)
+        return self._ap_progress_store
+
+    @property
+    def treasure(self) -> TreasureStore:
+        """Lazy-load treasure store."""
+        if self._treasure_store is None:
+            self._treasure_store = TreasureStore(self.campaign_id, base_dir=CAMPAIGNS_DIR)
+        return self._treasure_store
+
+    @property
+    def propagation(self) -> PropagationBus:
+        """Lazy-load propagation bus."""
+        if self._propagation_bus is None:
+            self._propagation_bus = PropagationBus(
+                knowledge=self.knowledge,
+                factions=self.factions,
+                locations=self.locations,
+                characters=self.characters,
+            )
+        return self._propagation_bus
 
     def _build_tools(self) -> list[ToolDef]:
         """Build the tool definitions."""
@@ -155,6 +196,36 @@ class CampaignStateServer(MCPServer):
                         type="string",
                         description="Comma-separated tags for categorization (e.g., 'combat, goblin, victory' or 'npc, ally, quest')",
                         required=False,
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="log_dialogue",
+                description="Record notable NPC dialogue for consistency tracking. Use this when an NPC says something significant — promises, threats, lies, secrets, or important rumor. This keeps a searchable record so you can maintain NPC consistency across sessions.",
+                parameters=[
+                    ToolParameter(
+                        name="character_name",
+                        type="string",
+                        description="Name of the NPC speaking",
+                    ),
+                    ToolParameter(
+                        name="content",
+                        type="string",
+                        description="What the NPC said or the gist of their dialogue",
+                    ),
+                    ToolParameter(
+                        name="dialogue_type",
+                        type="string",
+                        description="Type of dialogue: 'statement', 'promise', 'threat', 'lie', 'rumor', 'secret'",
+                        required=False,
+                        default="statement",
+                    ),
+                    ToolParameter(
+                        name="flagged",
+                        type="boolean",
+                        description="Flag this dialogue as important for future reference (e.g., promises to keep, lies to remember)",
+                        required=False,
+                        default=False,
                     ),
                 ],
             ),
@@ -644,6 +715,179 @@ class CampaignStateServer(MCPServer):
                 description="Get all revealed secrets with revelation details.",
                 parameters=[],
             ),
+            # Propagation tools
+            ToolDef(
+                name="propagate_location_to_npc",
+                description="Give an NPC the common knowledge associated with a location. "
+                "Use when an NPC is known to inhabit or have visited a location.",
+                parameters=[
+                    ToolParameter(
+                        name="character_name",
+                        type="string",
+                        description="Name of the NPC",
+                    ),
+                    ToolParameter(
+                        name="location_name",
+                        type="string",
+                        description="Name of the location whose common knowledge to propagate",
+                    ),
+                ],
+            ),
+            # Session recap tool
+            ToolDef(
+                name="get_session_recap",
+                description="Get a structured 'Previously on...' recap of the last (or specified) session. "
+                "Includes key events, flagged dialogue, and current arc.",
+                parameters=[
+                    ToolParameter(
+                        name="session_id",
+                        type="string",
+                        description="Specific session ID to recap (default: most recent ended session)",
+                        required=False,
+                    ),
+                ],
+            ),
+            # Travel time
+            ToolDef(
+                name="calculate_travel_time",
+                description="Calculate overland travel time between locations using PF2e travel rules. "
+                "Accounts for speed, terrain, mounting, and forced march.",
+                parameters=[
+                    ToolParameter(name="from_location", type="string", description="Starting location name"),
+                    ToolParameter(name="to_location", type="string", description="Destination location name"),
+                    ToolParameter(
+                        name="speed_ft", type="integer",
+                        description="Base land speed in feet (default: 25)", required=False, default=25,
+                    ),
+                    ToolParameter(
+                        name="terrain", type="string",
+                        description="Terrain type: easy, normal, difficult, greater_difficult (default: normal)",
+                        required=False, default="normal",
+                    ),
+                    ToolParameter(
+                        name="mounted", type="boolean",
+                        description="Whether the party is mounted (default: false)", required=False, default=False,
+                    ),
+                    ToolParameter(
+                        name="forced_march", type="boolean",
+                        description="Whether to force-march (+50%% distance, requires Fort saves)", required=False, default=False,
+                    ),
+                ],
+            ),
+            # Hazard detection
+            ToolDef(
+                name="check_hazard_detection",
+                description="Advisory tool: check which PCs would detect a hazard based on Stealth DC and "
+                "exploration activities. No dice rolls — reports who auto-detects and who needs a check.",
+                parameters=[
+                    ToolParameter(name="stealth_dc", type="integer", description="The hazard's Stealth DC"),
+                    ToolParameter(
+                        name="party_perception", type="string",
+                        description="JSON map of PC name to Perception modifier, e.g. '{\"Valeros\": 12, \"Ezren\": 8}'",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="scouting", type="boolean",
+                        description="Is someone Scouting? (+1 initiative, not direct detection)", required=False, default=False,
+                    ),
+                    ToolParameter(
+                        name="searching", type="boolean",
+                        description="Is someone Searching? (auto-detect if Perception >= DC)", required=False, default=False,
+                    ),
+                ],
+            ),
+            # --- Phase 5: AP Progression ---
+            ToolDef(
+                name="ap_progress",
+                description="Track Adventure Path progression. Actions: "
+                "'complete_encounter' (mark encounter done, award XP), "
+                "'explore_area' (mark area explored), "
+                "'milestone' (record a milestone), "
+                "'get_progress' (view progress for a book), "
+                "'list_incomplete' (show upcoming entries).",
+                parameters=[
+                    ToolParameter(
+                        name="action", type="string",
+                        description="Action: complete_encounter, explore_area, milestone, get_progress, list_incomplete",
+                    ),
+                    ToolParameter(
+                        name="name", type="string",
+                        description="Entry name (e.g., 'Goblin Ambush', 'Room B12')",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="xp", type="integer",
+                        description="XP to award (for complete_encounter/milestone)",
+                        required=False, default=0,
+                    ),
+                    ToolParameter(
+                        name="book", type="string",
+                        description="Book name for filtering (e.g., 'Abomination Vaults Book 1')",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="description", type="string",
+                        description="Optional notes about the entry",
+                        required=False,
+                    ),
+                ],
+            ),
+            # --- Phase 5: Treasure Tracking ---
+            ToolDef(
+                name="treasure",
+                description="Track party treasure and loot. Actions: "
+                "'log' (add item to party loot), "
+                "'distribute' (give item to a character), "
+                "'sell' (sell item at half price), "
+                "'wealth' (show party wealth summary), "
+                "'by_level' (compare wealth to expected for party level).",
+                parameters=[
+                    ToolParameter(
+                        name="action", type="string",
+                        description="Action: log, distribute, sell, wealth, by_level",
+                    ),
+                    ToolParameter(
+                        name="item_name", type="string",
+                        description="Item name (for log action)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="value_gp", type="number",
+                        description="Item value in gold pieces (for log action)",
+                        required=False, default=0,
+                    ),
+                    ToolParameter(
+                        name="item_level", type="integer",
+                        description="Item level (for log action)",
+                        required=False, default=0,
+                    ),
+                    ToolParameter(
+                        name="character", type="string",
+                        description="Character name (for distribute action)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="item_id", type="integer",
+                        description="Item ID (for distribute/sell actions)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="source", type="string",
+                        description="Where the item came from (for log action)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="party_level", type="integer",
+                        description="Party level (for by_level action)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="party_size", type="integer",
+                        description="Number of PCs (for by_level action)",
+                        required=False, default=4,
+                    ),
+                ],
+            ),
         ]
 
     def list_tools(self) -> list[ToolDef]:
@@ -659,6 +903,8 @@ class CampaignStateServer(MCPServer):
                 return self._advance_time(args)
             elif name == "log_event":
                 return self._log_event(args)
+            elif name == "log_dialogue":
+                return self._log_dialogue(args)
             elif name == "search_history":
                 return self._search_history(args)
             elif name == "get_scene":
@@ -717,6 +963,18 @@ class CampaignStateServer(MCPServer):
                 return self._list_secrets(args)
             elif name == "get_revelation_history":
                 return self._get_revelation_history()
+            elif name == "propagate_location_to_npc":
+                return self._propagate_location_to_npc(args)
+            elif name == "get_session_recap":
+                return self._get_session_recap(args)
+            elif name == "calculate_travel_time":
+                return self._calculate_travel_time(args)
+            elif name == "check_hazard_detection":
+                return self._check_hazard_detection(args)
+            elif name == "ap_progress":
+                return self._ap_progress(args)
+            elif name == "treasure":
+                return self._treasure(args)
             else:
                 return ToolResult(success=False, error=f"Unknown tool: {name}")
         except Exception as e:
@@ -874,6 +1132,52 @@ class CampaignStateServer(MCPServer):
         return ToolResult(
             success=True,
             data=f"Event logged (importance: {importance}): {event[:100]}...",
+        )
+
+    def _log_dialogue(self, args: dict[str, Any]) -> ToolResult:
+        """Log notable NPC dialogue for consistency tracking."""
+        session = session_store.get_current(self.campaign_id)
+        if not session:
+            return ToolResult(success=False, error="No active session")
+
+        character_name = args.get("character_name", "")
+        if not character_name:
+            return ToolResult(success=False, error="character_name is required")
+
+        content = args.get("content", "")
+        if not content:
+            return ToolResult(success=False, error="Dialogue content is required")
+
+        dialogue_type = args.get("dialogue_type", "statement")
+        valid_types = ("statement", "promise", "threat", "lie", "rumor", "secret")
+        if dialogue_type not in valid_types:
+            dialogue_type = "statement"
+
+        flagged = args.get("flagged", False)
+        if isinstance(flagged, str):
+            flagged = flagged.lower() in ("true", "1", "yes")
+
+        # Slugify character name for ID
+        import re
+        slug = character_name.lower()
+        slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+        slug = re.sub(r"[\s_]+", "-", slug)
+        character_id = re.sub(r"-+", "-", slug).strip("-")
+
+        entry = self.dialogue.log_dialogue(
+            character_id=character_id,
+            character_name=character_name,
+            session_id=session.id,
+            content=content,
+            dialogue_type=dialogue_type,
+            flagged=bool(flagged),
+            turn_number=len(session.turns),
+        )
+
+        flag_marker = " [FLAGGED]" if entry.flagged else ""
+        return ToolResult(
+            success=True,
+            data=f"Dialogue logged ({dialogue_type}{flag_marker}): {character_name}: \"{content[:80]}\"",
         )
 
     def _search_history(self, args: dict[str, Any]) -> ToolResult:
@@ -1412,9 +1716,15 @@ class CampaignStateServer(MCPServer):
             character.faction_ids.append(faction.id)
             self.characters.update(character)
 
+        # Propagate faction's shared knowledge to new member
+        inherited = self.propagation.on_npc_joins_faction(
+            character.id, character.name, faction.id,
+        )
+        inherit_text = f" (inherited {inherited} knowledge entries)" if inherited else ""
+
         return ToolResult(
             success=True,
-            data=f"{character.name} added to faction: {faction.name}"
+            data=f"{character.name} added to faction: {faction.name}{inherit_text}"
         )
 
     def _get_faction_members(self, args: dict[str, Any]) -> ToolResult:
@@ -1739,17 +2049,24 @@ class CampaignStateServer(MCPServer):
                 error=f"Secret '{secret_id}' not found"
             )
 
-        # Get the secret to check consequences
+        # Get the secret to check consequences and propagate knowledge
         secret = self.secrets.get(secret_id)
         consequence_text = ""
-        if secret and secret.consequences:
-            untriggered = self.secrets.get_untriggered_consequences(secret_id)
-            if untriggered:
-                consequence_text = f"\n\nConsequences to trigger:\n" + "\n".join(f"  - {c}" for c in untriggered)
+        propagated = 0
+        if secret:
+            if secret.consequences:
+                untriggered = self.secrets.get_untriggered_consequences(secret_id)
+                if untriggered:
+                    consequence_text = f"\n\nConsequences to trigger:\n" + "\n".join(f"  - {c}" for c in untriggered)
+
+            # Auto-propagate to knowledge stores
+            propagated = self.propagation.on_secret_revealed(secret, revealer=revealer)
+
+        propagation_text = f"\n\nKnowledge propagated to {propagated} target(s)." if propagated else ""
 
         return ToolResult(
             success=True,
-            data=f"Revealed secret: {secret.content[:50]}...{consequence_text}"
+            data=f"Revealed secret: {secret.content[:50]}...{consequence_text}{propagation_text}"
         )
 
     def _list_secrets(self, args: dict[str, Any]) -> ToolResult:
@@ -1805,6 +2122,388 @@ class CampaignStateServer(MCPServer):
 
         return ToolResult(success=True, data="\n".join(lines))
 
+    # PF2e travel table constants
+    TERRAIN_MULTIPLIERS = {
+        "easy": 1.5,
+        "normal": 1.0,
+        "difficult": 0.5,
+        "greater_difficult": 0.25,
+    }
+
+    def _calculate_travel_time(self, args: dict[str, Any]) -> ToolResult:
+        """Calculate overland travel time."""
+        from_name = args.get("from_location", "")
+        to_name = args.get("to_location", "")
+        speed_ft = int(args.get("speed_ft", 25))
+        terrain = args.get("terrain", "normal")
+        mounted = args.get("mounted", False)
+        forced_march = args.get("forced_march", False)
+
+        if not from_name or not to_name:
+            return ToolResult(success=False, error="Both from_location and to_location are required.")
+
+        # Resolve locations and count hops
+        from_loc = self.locations.get_by_name(from_name)
+        to_loc = self.locations.get_by_name(to_name)
+
+        hops = 1  # Default: 1 hop if locations not connected or not found
+        if from_loc and to_loc:
+            if to_loc.id in from_loc.connected_locations:
+                hops = 1
+            else:
+                # BFS to find shortest path
+                hops = self._bfs_hops(from_loc.id, to_loc.id) or 1
+
+        # PF2e: speed 25ft -> ~3 mph -> ~24 miles/day
+        base_speed = 40 if mounted else speed_ft
+        mph = base_speed / 25 * 3  # 25ft = 3 mph
+        miles_per_day = mph * 8  # 8 hours of travel
+
+        # Terrain
+        terrain_mult = self.TERRAIN_MULTIPLIERS.get(terrain, 1.0)
+        miles_per_day *= terrain_mult
+
+        # Forced march
+        if forced_march:
+            miles_per_day *= 1.5
+
+        # Estimate distance (~24 miles per hop as baseline)
+        distance_miles = hops * 24
+        travel_days = distance_miles / miles_per_day if miles_per_day > 0 else float("inf")
+
+        lines = [
+            f"**Travel: {from_name} -> {to_name}**",
+            f"**Distance:** ~{distance_miles} miles ({hops} hop{'s' if hops != 1 else ''})",
+            f"**Speed:** {base_speed} ft. ({mph:.1f} mph)",
+            f"**Terrain:** {terrain} (x{terrain_mult})",
+            f"**Daily Travel:** ~{miles_per_day:.0f} miles/day",
+            f"**Estimated Time:** ~{travel_days:.1f} days",
+        ]
+
+        if forced_march:
+            lines.append("**Forced March:** +50% distance; Fort saves required (DC 10 + 1/hour after 8h)")
+        if mounted:
+            lines.append("**Mounted:** Using mount speed (40 ft.)")
+
+        return ToolResult(success=True, data="\n".join(lines))
+
+    def _bfs_hops(self, start_id: str, end_id: str) -> int | None:
+        """BFS over location connections to find shortest hop count."""
+        from collections import deque
+        visited = {start_id}
+        queue = deque([(start_id, 0)])
+
+        while queue:
+            current, depth = queue.popleft()
+            loc = self.locations.get(current)
+            if not loc:
+                continue
+            for neighbor_id in loc.connected_locations:
+                if neighbor_id == end_id:
+                    return depth + 1
+                if neighbor_id not in visited:
+                    visited.add(neighbor_id)
+                    queue.append((neighbor_id, depth + 1))
+
+        return None
+
+    def _check_hazard_detection(self, args: dict[str, Any]) -> ToolResult:
+        """Advisory hazard detection check."""
+        import json as json_mod
+        stealth_dc = int(args.get("stealth_dc", 20))
+        scouting = args.get("scouting", False)
+        searching = args.get("searching", False)
+
+        party_perception_str = args.get("party_perception", "{}")
+        try:
+            if isinstance(party_perception_str, str):
+                party_perception = json_mod.loads(party_perception_str)
+            else:
+                party_perception = party_perception_str
+        except (json_mod.JSONDecodeError, TypeError):
+            party_perception = {}
+
+        lines = [f"**Hazard Detection Check** (Stealth DC {stealth_dc})"]
+        if not party_perception:
+            lines.append("No party perception data provided — provide party_perception for specific analysis.")
+            lines.append(f"A character needs Perception >= {stealth_dc} to detect (if Searching).")
+            if searching:
+                lines.append("Someone is Searching: auto-detect if Perception meets DC.")
+            return ToolResult(success=True, data="\n".join(lines))
+
+        auto_detect = []
+        needs_check = []
+        cannot_detect = []
+
+        for pc_name, perception in party_perception.items():
+            perception = int(perception)
+            if searching and perception >= stealth_dc:
+                auto_detect.append(f"{pc_name} (Perception +{perception})")
+            elif perception >= stealth_dc - 5:
+                needs_check.append(f"{pc_name} (Perception +{perception}, needs roll)")
+            else:
+                cannot_detect.append(f"{pc_name} (Perception +{perception})")
+
+        if auto_detect:
+            lines.append(f"\n**Auto-Detect (Searching):** {', '.join(auto_detect)}")
+        if needs_check:
+            lines.append(f"**Needs Check:** {', '.join(needs_check)}")
+        if cannot_detect:
+            lines.append(f"**Unlikely to Detect:** {', '.join(cannot_detect)}")
+
+        if scouting:
+            lines.append("\n*Scout active: party gets +1 circumstance bonus to initiative if combat starts.*")
+
+        return ToolResult(success=True, data="\n".join(lines))
+
+    def _get_session_recap(self, args: dict[str, Any]) -> ToolResult:
+        """Get a structured recap of a previous session."""
+        session_id = args.get("session_id")
+
+        if session_id:
+            session = session_store.get(self.campaign_id, session_id)
+        else:
+            session = session_store.get_previous_session(self.campaign_id)
+
+        if not session:
+            return ToolResult(
+                success=True,
+                data="No previous sessions found for recap.",
+            )
+
+        lines = [f"**Previously On... (Session {session.id})**\n"]
+
+        # Summary
+        if session.summary:
+            lines.append(f"**Summary:** {session.summary}\n")
+
+        # Campaign arc
+        campaign = campaign_store.get(self.campaign_id)
+        if campaign and campaign.current_arc:
+            lines.append(f"**Current Arc:** {campaign.current_arc}\n")
+
+        # Key events (sorted by importance)
+        importance_order = {"campaign": 0, "arc": 1, "session": 2}
+        try:
+            events = self.history.search("", session_id=session.id, limit=20)
+            if events:
+                events.sort(key=lambda e: importance_order.get(e.get("importance", "session"), 2))
+                lines.append("**Key Events:**")
+                for event in events:
+                    imp = event.get("importance", "session")
+                    prefix = {"campaign": "!!!", "arc": "!!", "session": "!"}.get(imp, "!")
+                    lines.append(f"  {prefix} {event.get('event', event.get('text', ''))}")
+                lines.append("")
+        except Exception:
+            pass
+
+        # Flagged dialogue
+        try:
+            flagged = self.dialogue.search(session_id=session.id, flagged_only=True, limit=10)
+            if flagged:
+                lines.append("**Flagged Dialogue:**")
+                for d in flagged:
+                    lines.append(f"  [{d.get('character_name', 'Unknown')}]: \"{d.get('content', '')}\"")
+                lines.append("")
+        except Exception:
+            pass
+
+        return ToolResult(success=True, data="\n".join(lines))
+
+    def _propagate_location_to_npc(self, args: dict[str, Any]) -> ToolResult:
+        """Propagate location common knowledge to an NPC."""
+        character_name = args.get("character_name")
+        location_name = args.get("location_name")
+
+        if not character_name or not location_name:
+            return ToolResult(
+                success=False,
+                error="Both character_name and location_name are required",
+            )
+
+        character = self.characters.get_by_name(character_name)
+        if not character:
+            return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+        location = self.locations.get_by_name(location_name)
+        if not location:
+            return ToolResult(success=False, error=f"Location '{location_name}' not found")
+
+        count = self.propagation.propagate_location_knowledge(
+            character.id, character.name, location.id,
+        )
+
+        if count == 0:
+            return ToolResult(
+                success=True,
+                data=f"{character.name} already knows everything about {location.name}.",
+            )
+
+        return ToolResult(
+            success=True,
+            data=f"{character.name} learned {count} knowledge entries from {location.name}.",
+        )
+
+    def _ap_progress(self, args: dict[str, Any]) -> ToolResult:
+        """Compound tool for AP progression tracking."""
+        action = args.get("action", "")
+        name = args.get("name", "")
+        book = args.get("book", "")
+        xp = int(args.get("xp", 0))
+        description = args.get("description", "")
+
+        if action == "complete_encounter":
+            if not name:
+                return ToolResult(success=False, error="'name' is required for complete_encounter")
+            entry = self.ap_progress.mark_complete(
+                name=name, entry_type="encounter", book=book,
+                xp_awarded=xp, notes=description,
+            )
+            return ToolResult(
+                success=True,
+                data=f"Encounter completed: **{name}**"
+                + (f" (+{xp} XP)" if xp else "")
+                + (f"\nTotal XP awarded: {self.ap_progress.total_xp()}" if xp else ""),
+            )
+
+        elif action == "explore_area":
+            if not name:
+                return ToolResult(success=False, error="'name' is required for explore_area")
+            self.ap_progress.mark_complete(
+                name=name, entry_type="area", book=book, notes=description,
+            )
+            return ToolResult(success=True, data=f"Area explored: **{name}**")
+
+        elif action == "milestone":
+            if not name:
+                return ToolResult(success=False, error="'name' is required for milestone")
+            self.ap_progress.mark_complete(
+                name=name, entry_type="milestone", book=book,
+                xp_awarded=xp, notes=description,
+            )
+            return ToolResult(
+                success=True,
+                data=f"Milestone reached: **{name}**"
+                + (f" (+{xp} XP)" if xp else ""),
+            )
+
+        elif action == "get_progress":
+            entries = self.ap_progress.get_progress(book=book)
+            if not entries:
+                return ToolResult(success=True, data="No progress entries recorded yet.")
+
+            lines = [f"**AP Progress** ({len(entries)} entries)"]
+            if book:
+                summary = self.ap_progress.get_book_progress(book)
+                lines.append(f"**Book:** {book} — {summary['total_xp']} XP total")
+                for etype, info in summary["types"].items():
+                    lines.append(f"  {etype}: {info['count']} ({info['xp']} XP)")
+            else:
+                for e in entries:
+                    check = "x" if e["completed"] else " "
+                    lines.append(f"  [{check}] {e['entry_type']}: {e['name']}"
+                                + (f" (+{e['xp_awarded']} XP)" if e["xp_awarded"] else ""))
+            lines.append(f"\n**Total XP:** {self.ap_progress.total_xp()}")
+            return ToolResult(success=True, data="\n".join(lines))
+
+        elif action == "list_incomplete":
+            entries = self.ap_progress.list_incomplete(book=book)
+            if not entries:
+                return ToolResult(success=True, data="No incomplete entries.")
+            lines = [f"**Incomplete Entries** ({len(entries)})"]
+            for e in entries:
+                lines.append(f"  [ ] {e['entry_type']}: {e['name']}")
+            return ToolResult(success=True, data="\n".join(lines))
+
+        else:
+            return ToolResult(
+                success=False,
+                error=f"Unknown ap_progress action '{action}'. "
+                "Valid: complete_encounter, explore_area, milestone, get_progress, list_incomplete",
+            )
+
+    def _treasure(self, args: dict[str, Any]) -> ToolResult:
+        """Compound tool for treasure tracking."""
+        import json as json_mod
+
+        action = args.get("action", "")
+
+        if action == "log":
+            item_name = args.get("item_name", "")
+            if not item_name:
+                return ToolResult(success=False, error="'item_name' is required for log")
+            value_gp = float(args.get("value_gp", 0))
+            item_level = int(args.get("item_level", 0))
+            source = args.get("source", "")
+            entry = self.treasure.add_item(
+                item_name=item_name, value_gp=value_gp,
+                item_level=item_level, source=source,
+            )
+            return ToolResult(
+                success=True,
+                data=f"Logged: **{item_name}** (Level {item_level}, {value_gp} gp)"
+                + (f" from {source}" if source else "")
+                + f" [ID: {entry.id}]",
+            )
+
+        elif action == "distribute":
+            item_id = args.get("item_id")
+            character = args.get("character", "")
+            if not item_id or not character:
+                return ToolResult(success=False, error="Both 'item_id' and 'character' are required for distribute")
+            success = self.treasure.distribute_item(int(item_id), character)
+            if success:
+                return ToolResult(success=True, data=f"Item #{item_id} distributed to {character}.")
+            return ToolResult(success=False, error=f"Item #{item_id} not found.")
+
+        elif action == "sell":
+            item_id = args.get("item_id")
+            if not item_id:
+                return ToolResult(success=False, error="'item_id' is required for sell")
+            sale_value = self.treasure.sell_item(int(item_id))
+            if sale_value > 0:
+                return ToolResult(success=True, data=f"Item #{item_id} sold for {sale_value:.1f} gp.")
+            return ToolResult(success=False, error=f"Item #{item_id} not found.")
+
+        elif action == "wealth":
+            wealth = self.treasure.get_party_wealth()
+            lines = [
+                "**Party Wealth Summary**",
+                f"**Total Items:** {wealth['total_items']}",
+                f"**Total Value:** {wealth['total_value_gp']:.1f} gp",
+                f"**Sold Income:** {wealth['sold_income_gp']:.1f} gp",
+                f"**Effective Wealth:** {wealth['effective_wealth_gp']:.1f} gp",
+            ]
+            if wealth["holders"]:
+                lines.append("\n**By Holder:**")
+                for holder, info in wealth["holders"].items():
+                    lines.append(f"  {holder}: {info['count']} items ({info['value_gp']:.1f} gp)")
+            return ToolResult(success=True, data="\n".join(lines))
+
+        elif action == "by_level":
+            party_level = int(args.get("party_level", 1))
+            party_size = int(args.get("party_size", 4))
+            comparison = self.treasure.get_wealth_by_level(party_level, party_size)
+            diff = comparison["difference_gp"]
+            status = "on track" if abs(diff) < comparison["expected_wealth_gp"] * 0.1 else (
+                "ahead" if diff > 0 else "behind"
+            )
+            lines = [
+                f"**Wealth vs. Expected (Level {party_level}, {party_size} PCs)**",
+                f"**Current:** {comparison['current_wealth_gp']:.1f} gp",
+                f"**Expected:** {comparison['expected_wealth_gp']:.1f} gp",
+                f"**Difference:** {diff:+.1f} gp ({comparison['percentage']}%)",
+                f"**Status:** {status}",
+            ]
+            return ToolResult(success=True, data="\n".join(lines))
+
+        else:
+            return ToolResult(
+                success=False,
+                error=f"Unknown treasure action '{action}'. "
+                "Valid: log, distribute, sell, wealth, by_level",
+            )
+
     def close(self) -> None:
         """Close resources."""
         if self._history:
@@ -1813,3 +2512,12 @@ class CampaignStateServer(MCPServer):
         if self._dialogue_store:
             self._dialogue_store.close()
             self._dialogue_store = None
+        if self._knowledge_store:
+            self._knowledge_store.close()
+            self._knowledge_store = None
+        if self._ap_progress_store:
+            self._ap_progress_store.close()
+            self._ap_progress_store = None
+        if self._treasure_store:
+            self._treasure_store.close()
+            self._treasure_store = None

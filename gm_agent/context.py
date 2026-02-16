@@ -91,6 +91,11 @@ def build_context(
     if scene_info:
         system_parts.append(scene_info)
 
+    # Layer 5b: NPC knowledge hints for NPCs in scene
+    npc_hints = _build_npc_knowledge_hints(session)
+    if npc_hints:
+        system_parts.append(npc_hints)
+
     # Combine system message
     messages.append(Message(role="system", content="\n".join(system_parts)))
 
@@ -164,6 +169,28 @@ def _build_scene_info(
         scene_info += f"\n- **Notes**: {scene.notes}"
 
     return scene_info
+
+
+def _build_npc_knowledge_hints(session: Session) -> str | None:
+    """Build hints about NPC knowledge for NPCs in the current scene.
+
+    This reminds the agent to query NPC knowledge before speaking as
+    an NPC, without injecting the actual knowledge (which would consume
+    context and may contain spoilers the party hasn't earned yet).
+    """
+    scene = session.scene_state
+    if not scene.npcs_present:
+        return None
+
+    npc_list = ", ".join(scene.npcs_present)
+    return (
+        f"\n## NPC Knowledge Available"
+        f"\nThe following NPCs are in this scene: {npc_list}"
+        f"\nBefore speaking as any of these NPCs, use `what_will_npc_share` "
+        f"or `query_npc_knowledge` to check what they know and would share. "
+        f"This ensures NPC dialogue is grounded in their actual knowledge "
+        f"and respects sharing conditions (trust, persuasion DCs, etc.)."
+    )
 
 
 def estimate_tokens(messages: list[Message]) -> int:

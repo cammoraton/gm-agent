@@ -447,13 +447,21 @@ class GMAgent:
             if self.verbose:
                 print(f"\n[Summary update failed: {e}]")
 
-    def end_session(self, summary: str = "", auto_generate: bool = False) -> Session | None:
+    def end_session(
+        self,
+        summary: str = "",
+        auto_generate: bool = False,
+        auto_crunch: bool = False,
+    ) -> Session | None:
         """End the current session.
 
         Args:
             summary: Optional summary text. If empty and auto_generate is True,
                     will generate a summary using the LLM.
             auto_generate: If True and no summary provided, generate one.
+            auto_crunch: If True, run session post-processing (crunch) after
+                        ending the session to extract events, dialogue,
+                        knowledge updates, and arc progress.
 
         Returns:
             The ended session, or None if no active session.
@@ -464,7 +472,20 @@ class GMAgent:
             except Exception:
                 pass  # Use empty summary if generation fails
 
-        return session_store.end(self.campaign.id, summary)
+        session = session_store.end(self.campaign.id, summary)
+
+        if session and auto_crunch:
+            try:
+                from .prep.crunch import CrunchPipeline
+
+                pipeline = CrunchPipeline(self.campaign.id, self.llm)
+                pipeline.run(session)
+                pipeline.close()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("Session crunch failed: %s", e)
+
+        return session
 
     def generate_summary(self) -> str:
         """Force-generate a summary of the current session.

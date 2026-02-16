@@ -75,15 +75,29 @@ class MCPClient:
         from .character_runner import CharacterRunnerServer
         from .npc_builder import NPCBuilderServer
         from .npc_knowledge import NPCKnowledgeServer
+        from .creature_modifier import CreatureModifierServer
+        from .subsystem import SubsystemServer
 
         campaign_id = self.context.get("campaign_id")
         llm = self.context.get("llm")
 
+        # Load campaign books for scoped searches
+        campaign_books: list[str] = []
+        if campaign_id:
+            from ..storage.campaign import CampaignStore
+            try:
+                campaign = CampaignStore().get(campaign_id)
+                if campaign:
+                    campaign_books = campaign.books
+            except Exception:
+                pass
+
         # Always create stateless servers
-        self._local_servers["pf2e-rag"] = PF2eRAGServer()
+        self._local_servers["pf2e-rag"] = PF2eRAGServer(campaign_books=campaign_books)
         self._local_servers["dice"] = DiceServer()
         self._local_servers["encounter"] = EncounterServer()
         self._local_servers["notes"] = NotesServer()
+        self._local_servers["creature-modifier"] = CreatureModifierServer()
 
         # Create campaign-dependent servers if campaign_id provided
         if campaign_id:
@@ -91,6 +105,7 @@ class MCPClient:
             self._local_servers["character-runner"] = CharacterRunnerServer(campaign_id, llm=llm)
             self._local_servers["npc-builder"] = NPCBuilderServer(campaign_id, llm=llm)
             self._local_servers["npc-knowledge"] = NPCKnowledgeServer(campaign_id)
+            self._local_servers["subsystem"] = SubsystemServer(campaign_id)
 
         # Add Foundry server if provided
         if self._foundry_server:

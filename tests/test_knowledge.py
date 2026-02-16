@@ -470,5 +470,142 @@ class TestKnowledgePersistence:
             store2.close()
 
 
+class TestPartyKnowledge:
+    """Tests for party knowledge tracking tools (Phase 3)."""
+
+    @pytest.fixture
+    def party_server(self, tmp_path):
+        """Create NPCKnowledgeServer for party knowledge testing."""
+        with patch("gm_agent.mcp.npc_knowledge.CAMPAIGNS_DIR", tmp_path):
+            server = NPCKnowledgeServer("test-campaign")
+            yield server
+
+    def test_add_party_knowledge(self, party_server):
+        result = party_server.call_tool("add_party_knowledge", {
+            "content": "The mayor is secretly working with the cult.",
+            "source": "found letter in mayor's desk",
+            "tags": "mayor,cult,main_plot",
+            "importance": 8,
+        })
+        assert result.success
+        assert "Party knowledge recorded" in result.data
+        assert "mayor is secretly working" in result.data
+
+    def test_query_party_knowledge(self, party_server):
+        # Add some knowledge
+        party_server.call_tool("add_party_knowledge", {
+            "content": "The secret entrance is behind the waterfall.",
+            "source": "told by hermit",
+            "tags": "dungeon,entrance",
+        })
+        party_server.call_tool("add_party_knowledge", {
+            "content": "Dragons are weak to cold iron.",
+            "source": "library research",
+            "tags": "monsters,weakness",
+        })
+
+        # Query all
+        result = party_server.call_tool("query_party_knowledge", {})
+        assert result.success
+        assert "waterfall" in result.data
+        assert "Dragons" in result.data
+
+    def test_query_party_knowledge_with_text_filter(self, party_server):
+        party_server.call_tool("add_party_knowledge", {
+            "content": "The mayor has a secret room.",
+            "tags": "mayor",
+        })
+        party_server.call_tool("add_party_knowledge", {
+            "content": "The blacksmith forges magical weapons.",
+            "tags": "shops",
+        })
+
+        result = party_server.call_tool("query_party_knowledge", {
+            "query": "mayor",
+        })
+        assert result.success
+        assert "mayor" in result.data
+        assert "blacksmith" not in result.data
+
+    def test_query_party_knowledge_with_tags(self, party_server):
+        party_server.call_tool("add_party_knowledge", {
+            "content": "Plot info.",
+            "tags": "main_plot",
+        })
+        party_server.call_tool("add_party_knowledge", {
+            "content": "Side info.",
+            "tags": "side_quest",
+        })
+
+        result = party_server.call_tool("query_party_knowledge", {
+            "tags": "main_plot",
+        })
+        assert result.success
+        assert "Plot info" in result.data
+
+    def test_query_party_knowledge_empty(self, party_server):
+        result = party_server.call_tool("query_party_knowledge", {})
+        assert result.success
+        assert "no matching knowledge" in result.data
+
+    def test_has_party_learned_yes(self, party_server):
+        party_server.call_tool("add_party_knowledge", {
+            "content": "The mayor is corrupt and takes bribes.",
+            "source": "overheard conversation",
+        })
+
+        result = party_server.call_tool("has_party_learned", {
+            "topic": "corrupt",
+        })
+        assert result.success
+        assert "**Yes**" in result.data
+        assert "corrupt" in result.data
+
+    def test_has_party_learned_no(self, party_server):
+        result = party_server.call_tool("has_party_learned", {
+            "topic": "dragon lair location",
+        })
+        assert result.success
+        assert "**No**" in result.data
+
+    def test_party_knowledge_isolated_from_npc(self, party_server, tmp_path):
+        """Party knowledge should not appear in NPC queries and vice versa."""
+        # Add party knowledge
+        party_server.call_tool("add_party_knowledge", {
+            "content": "Party secret info.",
+        })
+
+        # Add NPC knowledge (need a character first)
+        char_store = CharacterStore("test-campaign", base_dir=tmp_path)
+        npc = char_store.create("Test NPC", character_type="npc")
+
+        party_server.call_tool("add_npc_knowledge", {
+            "character_name": "Test NPC",
+            "content": "NPC secret info.",
+        })
+
+        # Query NPC knowledge - should not include party knowledge
+        npc_result = party_server.call_tool("query_npc_knowledge", {
+            "character_name": "Test NPC",
+        })
+        assert "NPC secret info" in npc_result.data
+        assert "Party secret info" not in npc_result.data
+
+        # Query party knowledge - should not include NPC knowledge
+        party_result = party_server.call_tool("query_party_knowledge", {})
+        assert "Party secret info" in party_result.data
+        assert "NPC secret info" not in party_result.data
+
+    def test_has_party_learned_missing_topic(self, party_server):
+        result = party_server.call_tool("has_party_learned", {"topic": ""})
+        assert not result.success
+        assert "topic is required" in result.error
+
+    def test_add_party_knowledge_missing_content(self, party_server):
+        result = party_server.call_tool("add_party_knowledge", {})
+        assert not result.success
+        assert "content is required" in result.error
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

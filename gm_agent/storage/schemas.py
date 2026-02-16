@@ -73,6 +73,7 @@ class Campaign(BaseModel):
     name: str
     background: str = ""
     current_arc: str = ""
+    books: list[str] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
     preferences: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)

@@ -154,6 +154,14 @@ class SessionStore:
             data = json.load(f)
         return Session.model_validate(data)
 
+    def get_previous_session(self, campaign_id: str) -> Session | None:
+        """Get the most recently ended session for a campaign."""
+        sessions = self.list(campaign_id)
+        if not sessions:
+            return None
+        # list() sorts by started_at ascending; last item is most recent
+        return sessions[-1]
+
     def _save_current(self, session: Session) -> None:
         """Save the current session."""
         with open(self._current_session_file(session.campaign_id), "w") as f:
