@@ -114,6 +114,24 @@ class PF2eRAGServer(MCPServer):
                         default=None,
                     ),
                     ToolParameter(
+                        name="level",
+                        type="integer",
+                        description="Filter to entities at this level (creatures, hazards). Use with creature/hazard type filters.",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="level_range",
+                        type="string",
+                        description="Filter to level range, e.g. '3-7'. Use with creature/hazard type filters.",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="traits",
+                        type="string",
+                        description="Comma-separated traits to filter by (e.g. 'undead,humanoid'). All traits must match.",
+                        required=False,
+                    ),
+                    ToolParameter(
                         name="limit",
                         type="integer",
                         description="Maximum number of results",
@@ -306,8 +324,20 @@ class PF2eRAGServer(MCPServer):
                 types = args.get("types")
                 if types and isinstance(types, str):
                     types = [t.strip() for t in types.split(",")]
+                traits = args.get("traits")
+                if traits and isinstance(traits, str):
+                    traits = [t.strip() for t in traits.split(",")]
+                level_range = None
+                level_range_str = args.get("level_range")
+                if level_range_str and isinstance(level_range_str, str) and "-" in level_range_str:
+                    parts = level_range_str.split("-", 1)
+                    try:
+                        level_range = (int(parts[0].strip()), int(parts[1].strip()))
+                    except (ValueError, IndexError):
+                        pass
                 return self._search_content(
                     args["query"], types, args.get("book"), args.get("limit", 10),
+                    level=args.get("level"), level_range=level_range, traits=traits,
                 )
             elif name == "search_lore":
                 return self._search_lore(args["query"], args.get("limit", 5))
@@ -424,6 +454,9 @@ class PF2eRAGServer(MCPServer):
 
     def _search_content(
         self, query: str, types: list[str] | None, book: str | None, limit: int,
+        level: int | None = None,
+        level_range: tuple[int, int] | None = None,
+        traits: list[str] | None = None,
     ) -> ToolResult:
         """General content search."""
         kwargs = {"top_k": limit}
@@ -431,6 +464,12 @@ class PF2eRAGServer(MCPServer):
             kwargs["include_types"] = types
         if book:
             kwargs["book"] = book
+        if level is not None:
+            kwargs["level"] = level
+        if level_range is not None:
+            kwargs["level_range"] = level_range
+        if traits:
+            kwargs["traits"] = traits
 
         results = self.search.search(query, **kwargs)
 

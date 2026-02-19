@@ -595,3 +595,246 @@ class TestToolDefConversions:
             assert "type" in ollama["function"]["parameters"]
             assert "properties" in ollama["function"]["parameters"]
             assert "required" in ollama["function"]["parameters"]
+
+
+class TestMetadataFiltering:
+    """Tests for metadata-aware search (level, level_range, traits)."""
+
+    @pytest.fixture
+    def search_with_creatures(self, mock_pathfinder_search: MockPathfinderSearch):
+        """Set up MockPathfinderSearch with diverse creature results."""
+        mock_pathfinder_search._search_results = [
+            {
+                "name": "Zombie Shambler",
+                "type": "creature",
+                "category": "creature",
+                "source": "Monster Core",
+                "book": "Monster Core",
+                "book_type": "bestiary",
+                "page": 10,
+                "content": "A shambling undead creature",
+                "metadata": {"level": -1, "traits": ["undead", "mindless"]},
+                "score": 8.0,
+            },
+            {
+                "name": "Skeletal Champion",
+                "type": "creature",
+                "category": "creature",
+                "source": "Monster Core",
+                "book": "Monster Core",
+                "book_type": "bestiary",
+                "page": 20,
+                "content": "An undead skeletal warrior",
+                "metadata": {"level": 5, "traits": ["undead"]},
+                "score": 7.0,
+            },
+            {
+                "name": "Vampire Count",
+                "type": "creature",
+                "category": "creature",
+                "source": "Monster Core",
+                "book": "Monster Core",
+                "book_type": "bestiary",
+                "page": 30,
+                "content": "A powerful vampire noble",
+                "metadata": {"level": 9, "traits": ["undead", "vampire"]},
+                "score": 6.0,
+            },
+            {
+                "name": "Fire Giant",
+                "type": "creature",
+                "category": "creature",
+                "source": "Monster Core",
+                "book": "Monster Core",
+                "book_type": "bestiary",
+                "page": 40,
+                "content": "A massive fire-breathing giant",
+                "metadata": {"level": 10, "traits": ["giant", "fire"]},
+                "score": 5.0,
+            },
+            {
+                "name": "Innkeeper",
+                "type": "creature",
+                "category": "creature",
+                "source": "NPC Core",
+                "book": "NPC Core",
+                "book_type": "npc",
+                "page": 50,
+                "content": "A common innkeeper NPC",
+                "metadata": {"level": 1, "traits": ["human", "humanoid"]},
+                "score": 4.0,
+            },
+        ]
+        return mock_pathfinder_search
+
+    def test_search_level_exact(self, search_with_creatures):
+        """search() with level=5 returns only level 5 entities."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "undead", "level": 5},
+        )
+        assert result.success is True
+        # Check that the mock was called with level param
+        query, kwargs = search_with_creatures.calls[-1]
+        assert kwargs.get("level") == 5
+        # Verify filtering worked
+        assert "Skeletal Champion" in result.data
+        assert "Zombie Shambler" not in result.data
+        assert "Vampire Count" not in result.data
+
+    def test_search_level_range(self, search_with_creatures):
+        """search() with level_range filters to level range."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "creature", "level_range": "5-10"},
+        )
+        assert result.success is True
+        query, kwargs = search_with_creatures.calls[-1]
+        assert kwargs.get("level_range") == (5, 10)
+        # Should include level 5, 9, and 10
+        assert "Skeletal Champion" in result.data
+        assert "Vampire Count" in result.data
+        assert "Fire Giant" in result.data
+        # Should exclude level -1 and 1
+        assert "Zombie Shambler" not in result.data
+        assert "Innkeeper" not in result.data
+
+    def test_search_traits_single(self, search_with_creatures):
+        """search() with traits filters to entities with that trait."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "creature", "traits": "undead"},
+        )
+        assert result.success is True
+        query, kwargs = search_with_creatures.calls[-1]
+        assert kwargs.get("traits") == ["undead"]
+        # All undead
+        assert "Zombie Shambler" in result.data
+        assert "Skeletal Champion" in result.data
+        assert "Vampire Count" in result.data
+        # Not undead
+        assert "Fire Giant" not in result.data
+        assert "Innkeeper" not in result.data
+
+    def test_search_traits_multiple(self, search_with_creatures):
+        """search() with multiple traits requires ALL to match."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "creature", "traits": "undead,vampire"},
+        )
+        assert result.success is True
+        query, kwargs = search_with_creatures.calls[-1]
+        assert kwargs.get("traits") == ["undead", "vampire"]
+        # Only vampire count has both
+        assert "Vampire Count" in result.data
+        assert "Skeletal Champion" not in result.data
+
+    def test_search_level_plus_traits(self, search_with_creatures):
+        """search() with combined level + traits filters."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "creature", "level": 5, "traits": "undead"},
+        )
+        assert result.success is True
+        # Only level 5 undead = Skeletal Champion
+        assert "Skeletal Champion" in result.data
+        assert "Zombie Shambler" not in result.data
+        assert "Vampire Count" not in result.data
+
+    def test_search_level_range_plus_traits(self, search_with_creatures):
+        """search() with combined level_range + traits filters."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool(
+            "search_content",
+            {"query": "creature", "level_range": "1-8", "traits": "undead"},
+        )
+        assert result.success is True
+        # Undead in range 1-8: Skeletal Champion (5)
+        assert "Skeletal Champion" in result.data
+        # Zombie Shambler is level -1, outside range
+        assert "Zombie Shambler" not in result.data
+        # Vampire Count is level 9, outside range
+        assert "Vampire Count" not in result.data
+
+    def test_search_content_tool_has_new_params(self, mock_pathfinder_search):
+        """search_content tool definition should include level, level_range, traits params."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_content")
+        param_names = [p.name for p in tool.parameters]
+        assert "level" in param_names
+        assert "level_range" in param_names
+        assert "traits" in param_names
+
+    def test_search_no_metadata_filters_unchanged(self, mock_pathfinder_search):
+        """search_content without metadata filters should work as before."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {"query": "goblin"})
+        assert result.success is True
+        assert "Goblin" in result.data
+
+
+class TestPartialNameMatchBoost:
+    """Tests for partial name-match boost in search scoring."""
+
+    @pytest.fixture
+    def search_with_innkeeper(self, mock_pathfinder_search: MockPathfinderSearch):
+        """Set up mock with an Innkeeper creature and generic NPC stat blocks."""
+        mock_pathfinder_search._search_results = [
+            {
+                "name": "Innkeeper",
+                "type": "creature",
+                "category": "creature",
+                "source": "NPC Core",
+                "book": "NPC Core",
+                "book_type": "npc",
+                "page": 50,
+                "content": "A common innkeeper NPC who runs a tavern",
+                "metadata": {"level": 1},
+                "score": 4.0,
+            },
+            {
+                "name": "Commoner",
+                "type": "creature",
+                "category": "creature",
+                "source": "NPC Core",
+                "book": "NPC Core",
+                "book_type": "npc",
+                "page": 10,
+                "content": "A generic commoner. Can be used as innkeeper, merchant, or farmer.",
+                "metadata": {"level": -1},
+                "score": 8.0,
+            },
+        ]
+        return mock_pathfinder_search
+
+    def test_partial_name_match_params_passed(self, search_with_innkeeper):
+        """Verify search is called — partial name boost is SQL-level in real search."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {"query": "innkeeper"})
+        assert result.success is True
+        # Both results should be present (mock doesn't apply SQL-level boost)
+        assert "Innkeeper" in result.data
+        assert "Commoner" in result.data

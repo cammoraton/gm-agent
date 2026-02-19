@@ -669,6 +669,10 @@ class PathfinderSearch:
         category: str | list[str] = None,
         book_type: str | list[str] = None,
         book: str = None,
+        # Metadata filters
+        level: int | None = None,
+        level_range: tuple[int, int] | None = None,
+        traits: list[str] | None = None,
         # Deprecated params (mapped to new equivalents)
         source: str = None,
         source_categories: list[str] = None,
@@ -692,6 +696,9 @@ class PathfinderSearch:
             category: Filter by broad category (spell, feat, creature, etc.)
             book_type: Filter by book type (rulebook, bestiary, adventure, setting)
             book: Filter by exact book name
+            level: Filter to entities at this exact level (creatures, hazards)
+            level_range: Filter to level range (inclusive), e.g. (3, 7)
+            traits: Filter to entities with ALL of these traits
             source: Deprecated alias for book
             source_categories: Deprecated - mapped to book_type via CATEGORY_ALIASES
             edition: Deprecated - ignored (all content is remaster)
@@ -751,6 +758,9 @@ class PathfinderSearch:
                 book,
                 include_types,
                 type_exclusions,
+                level=level,
+                level_range=level_range,
+                traits=traits,
             )
         else:
             results = self._search_fts(
@@ -763,6 +773,9 @@ class PathfinderSearch:
                 original_query,
                 include_types,
                 type_exclusions,
+                level=level,
+                level_range=level_range,
+                traits=traits,
             )
 
         # Apply type-based score adjustments
@@ -787,6 +800,9 @@ class PathfinderSearch:
         original_query: str = None,
         include_types: list = None,
         type_exclusions: set = None,
+        level: int | None = None,
+        level_range: tuple[int, int] | None = None,
+        traits: list[str] | None = None,
     ) -> list[dict]:
         """Full-text search using FTS5 with exact match boosting and alias expansion."""
         boost_query = original_query or query
@@ -803,6 +819,7 @@ class PathfinderSearch:
             results = self._search_fts_single(
                 q, top_k * 2, doc_type, category, book_type, book,
                 include_types, type_exclusions,
+                level=level, level_range=level_range, traits=traits,
             )
             for r in results:
                 key = (r["name"], r["source"])
@@ -818,6 +835,7 @@ class PathfinderSearch:
                         term, 5, doc_type=None, category=category,
                         book_type=book_type, book=book,
                         include_types=include_types, type_exclusions=type_exclusions,
+                        level=level, level_range=level_range, traits=traits,
                     )
                     for r in term_results:
                         if r["type"] in ("condition", "rule", "trait"):
@@ -871,17 +889,24 @@ class PathfinderSearch:
         book: str = None,
         include_types: list = None,
         type_exclusions: set = None,
+        level: int | None = None,
+        level_range: tuple[int, int] | None = None,
+        traits: list[str] | None = None,
     ) -> list[dict]:
         """Single FTS5 search without alias expansion."""
         # content has TEXT PK (id), FTS5 uses implicit integer rowid
+        # Score: BM25 (negative = better) minus name-match boosts (exact=100, partial=30)
         sql = """
             SELECT c.*,
-                   bm25(content_fts) - (CASE WHEN LOWER(c.name) = LOWER(?) THEN 100 ELSE 0 END) as score
+                   bm25(content_fts)
+                   - (CASE WHEN LOWER(c.name) = LOWER(?) THEN 100
+                           WHEN LOWER(c.name) LIKE '%' || LOWER(?) || '%' THEN 30
+                           ELSE 0 END) as score
             FROM content c
             JOIN content_fts ON c.rowid = content_fts.rowid
             WHERE content_fts MATCH ?
         """
-        params: list = [query, query]
+        params: list = [query, query, query]
 
         if doc_type:
             sql += " AND c.type = ?"
@@ -911,6 +936,20 @@ class PathfinderSearch:
             sql += f" AND c.type NOT IN ({placeholders})"
             params.extend(type_exclusions)
 
+        # Metadata filters
+        if level is not None:
+            sql += " AND CAST(json_extract(c.metadata, '$.level') AS INTEGER) = ?"
+            params.append(level)
+
+        if level_range is not None:
+            sql += " AND CAST(json_extract(c.metadata, '$.level') AS INTEGER) BETWEEN ? AND ?"
+            params.extend([level_range[0], level_range[1]])
+
+        if traits:
+            for trait in traits:
+                sql += ' AND LOWER(c.metadata) LIKE ?'
+                params.append(f'%"{trait.lower()}"%')
+
         sql += " ORDER BY score LIMIT ?"
         params.append(top_k)
 
@@ -920,7 +959,7 @@ class PathfinderSearch:
         except sqlite3.OperationalError:
             # FTS5 query syntax error - try quoted query
             safe_query = '"' + query.replace('"', '""') + '"'
-            params[1] = safe_query
+            params[2] = safe_query
             try:
                 cursor = self.conn.execute(sql, params)
                 return [self._row_to_result(row) for row in cursor]
@@ -953,6 +992,9 @@ class PathfinderSearch:
         book: str = None,
         include_types: list = None,
         type_exclusions: set = None,
+        level: int | None = None,
+        level_range: tuple[int, int] | None = None,
+        traits: list[str] | None = None,
     ) -> list[dict]:
         """Semantic search using pre-computed embeddings with numpy vectorized dot product."""
         query_embedding = get_embedding(query)
@@ -961,6 +1003,7 @@ class PathfinderSearch:
             return self._search_fts(
                 query, top_k, doc_type, category, book_type, book,
                 None, include_types, type_exclusions,
+                level=level, level_range=level_range, traits=traits,
             )
 
         # Build filter SQL for embeddings table
@@ -1018,6 +1061,7 @@ class PathfinderSearch:
                 return self._search_fts(
                     query, top_k, doc_type, category, book_type, book,
                     None, include_types, type_exclusions,
+                    level=level, level_range=level_range, traits=traits,
                 )
 
             # Vectorized dot product (embeddings are L2-normalized)
@@ -1066,6 +1110,21 @@ class PathfinderSearch:
                             continue
 
                     metadata = json.loads(entity_row["metadata"]) if entity_row["metadata"] else {}
+
+                    # Apply metadata filters
+                    if level is not None:
+                        entity_level = metadata.get("level")
+                        if entity_level is None or int(entity_level) != level:
+                            continue
+                    if level_range is not None:
+                        entity_level = metadata.get("level")
+                        if entity_level is None or not (level_range[0] <= int(entity_level) <= level_range[1]):
+                            continue
+                    if traits:
+                        entity_traits = [t.lower() for t in metadata.get("traits", [])]
+                        if not all(t.lower() in entity_traits for t in traits):
+                            continue
+
                     results.append(
                         {
                             "name": entity_row["name"],
@@ -1088,6 +1147,7 @@ class PathfinderSearch:
             return self._search_fts(
                 query, top_k, doc_type, category, book_type, book,
                 None, include_types, type_exclusions,
+                level=level, level_range=level_range, traits=traits,
             )
 
     def search_pages(

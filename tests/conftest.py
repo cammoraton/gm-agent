@@ -309,9 +309,36 @@ class MockPathfinderSearch:
     def __init__(self, db_path: str = "fake.db"):
         self.db_path = db_path
         self.calls: list[tuple[str, dict]] = []
+        # Configurable mock results — tests can override this
+        self._search_results: list[dict] | None = None
 
     def search(self, query: str, **kwargs) -> list[dict]:
         self.calls.append((query, kwargs))
+        if self._search_results is not None:
+            # Apply metadata filters to mock results (mirrors real search)
+            results = list(self._search_results)
+            level = kwargs.get("level")
+            level_range = kwargs.get("level_range")
+            traits = kwargs.get("traits")
+            if level is not None:
+                results = [r for r in results if r.get("metadata", {}).get("level") == level]
+            if level_range is not None:
+                lo, hi = level_range
+                results = [
+                    r for r in results
+                    if r.get("metadata", {}).get("level") is not None
+                    and lo <= r["metadata"]["level"] <= hi
+                ]
+            if traits:
+                traits_lower = [t.lower() for t in traits]
+                results = [
+                    r for r in results
+                    if all(
+                        t in [x.lower() for x in r.get("metadata", {}).get("traits", [])]
+                        for t in traits_lower
+                    )
+                ]
+            return results
         return [
             {
                 "name": "Goblin",
