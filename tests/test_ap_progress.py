@@ -116,7 +116,9 @@ class TestAPProgressTool:
         cs_module.session_store = session_store_local
         cs_module.CAMPAIGNS_DIR = campaigns_dir
 
-        server = CampaignStateServer(campaign.id)
+        from gm_agent.systems.pf2e.campaign_tools import PF2eCampaignToolPlugin
+        plugin = PF2eCampaignToolPlugin(campaign.id, base_dir=campaigns_dir)
+        server = CampaignStateServer(campaign.id, system_plugins=[plugin])
 
         yield {"server": server, "campaign": campaign}
 

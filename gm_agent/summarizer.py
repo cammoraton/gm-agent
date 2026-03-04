@@ -1,6 +1,6 @@
 """Rolling summary generation for sessions."""
 
-from .config import TURNS_BETWEEN_SUMMARIES
+from .config import TEMPERATURE_MECHANICAL, TURNS_BETWEEN_SUMMARIES
 from .models.base import LLMBackend, Message
 from .storage.schemas import Session, Turn
 
@@ -112,7 +112,7 @@ def generate_summary(
         The generated summary text
     """
     messages = generate_summary_prompt(session, since_turn)
-    response = llm.chat(messages, tools=None)  # No tools for summarization
+    response = llm.chat(messages, tools=None, temperature=TEMPERATURE_MECHANICAL)
     return response.text.strip()
 
 

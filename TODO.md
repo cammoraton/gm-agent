@@ -1,11 +1,82 @@
 # Future Improvements
 
-## Async Processing Optimization (Phase 4.2 Follow-up)
+## Completed
 
-### Current Architecture
+### Multi-System Architecture (RFC Phases 0-2) -- DONE
+- [x] `GameSystem` ABC with `@register_system` decorator
+- [x] `game_systems` / `primary_system` fields on Campaign model
+- [x] PF2e code moved to `gm_agent/systems/pf2e/`
+- [x] `FictionTreeStore` (SQLite-backed hierarchical fiction storage)
+- [x] Microscope system (24 tools, seeds, oracles, mini-games, virtual players)
+- [x] Ex Novo settlement generation system (13 tools)
+- [x] Delve underground kingdom system (13 tools)
+- [x] Ex Umbra dungeon generation system (13 tools)
+- [x] Cross-system fiction-to-knowledge extraction (`fiction_extraction.py`)
+- [x] GroundingServer (6 tools) with LLM reranking for fiction-to-mechanics grounding
+
+### Plugin Architecture (Phase 3 WS1) -- DONE
+- [x] `SystemToolPlugin` protocol on `base.py`
+- [x] `PF2eCampaignToolPlugin` extracts 4 PF2e-specific tools (travel time, hazard detection, AP progress, treasure)
+- [x] CampaignStateServer accepts `system_plugins` param, injects tool defs, delegates call_tool
+
+### LLM-Enhanced Grounding (Phase 3 WS2) -- DONE
+- [x] `_llm_rerank()` on GroundingServer — LLM selects best matches with reasoning
+- [x] Graceful fallback to raw BM25 results on LLM error
+- [x] Reasoning display in output
+
+### Fiction Knowledge Extraction (Phase 3 WS3) -- DONE
+- [x] `extract_from_microscope()` — root/palette/periods/events/scenes to knowledge
+- [x] `extract_from_settlement()` — factions/districts/resources/problems/landmarks
+- [x] `extract_from_dungeon()` — rooms/details for Delve and Ex Umbra
+- [x] `extract_fiction_knowledge` tool on CampaignStateServer
+- [x] Idempotent via `has_similar_knowledge()` dedup
+
+### Virtual Player Memory (Phase 3 WS4) -- DONE
+- [x] `decision_history` param on `generate_decision()`
+- [x] History prompt injection with truncation (max 5 recent)
+- [x] All 4 generation game servers track and pass VP history
+
+### Personality System -- DONE
+- [x] PersonalityProfile (50 traits, 20 archetypes)
+- [x] Virtual player personality integration in CharacterRunner
+- [x] Archetype-based decision style injection
+
+### Campaign Prep & Crunch -- DONE
+- [x] PrepPipeline: party/NPC/subsystem/world knowledge seeding (LLM-synthesized)
+- [x] CrunchPipeline: post-session event extraction, dialogue, knowledge updates, arc updates
+- [x] Prep log (JSONL training data)
+- [x] CLI: `campaign prep`, `campaign crunch`, `campaign generate`
+
+### Cross-System Propagation -- DONE
+- [x] PropagationBus mediator (secrets, factions, locations)
+- [x] `on_secret_revealed()`, `on_faction_knowledge_added()`, `on_npc_joins_faction()`
+- [x] Location-based knowledge pull model
+
+### NPC & World Systems -- DONE
+- [x] NPC knowledge with conditional sharing (trust, persuasion DC, duress)
+- [x] Party knowledge (`__party__` virtual character)
+- [x] Faction system (membership, shared knowledge, reputation)
+- [x] Location system (connected graph, knowledge, events)
+- [x] Secret & revelation tracking
+- [x] Dialogue history (SQLite FTS5)
+- [x] Session recap tool
+
+### Creature & Encounter Tools -- DONE
+- [x] CreatureModifierServer (elite/weak, templates, scaffold creature/hazard/troop/swarm)
+- [x] SubsystemServer (VP, influence, research, chase, infiltration, hazard, exploration)
+- [x] EncounterServer with random encounter generation
+- [x] AP progress tracking, treasure management
+
+---
+
+## In Progress / Future
+
+### Async Processing Optimization (Phase 4.2 Follow-up)
+
+**Current Architecture:**
 Phase 4.2 implements Redis locks for campaign serialization. Works correctly but has room for optimization.
 
-### Improved Architecture: Campaign-Specific Workers (Defense in Depth)
+**Improved Architecture: Campaign-Specific Workers (Defense in Depth)**
 
 **Primary mechanism**: Campaign-specific routing
 - Route all tasks for campaign-X to same worker queue
@@ -15,46 +86,8 @@ Phase 4.2 implements Redis locks for campaign serialization. Works correctly but
 **Safety mechanism**: Redis locks (guard rails)
 - Catch misrouting bugs
 - Protect during worker restarts/failover
-- Detect race conditions in development
 - **Lock acquisition should succeed immediately** (uncontended)
 - If locks ever block in production → bug signal (routing issue)
-
-```python
-# Task routing (consistent hashing by campaign)
-task_routes = {
-    'process_player_chat_async': {
-        'queue': lambda task_id, args: f"automation:{hash(args[0]) % 4}"
-    }
-}
-
-# Worker pools
-celery worker -Q automation:0  # Handles campaigns hash to 0
-celery worker -Q automation:1  # Handles campaigns hash to 1
-celery worker -Q automation:2  # etc.
-celery worker -Q automation:3
-
-# Task implementation (locks for safety, not primary mechanism)
-@task(queue determined by routing above)
-def process_player_chat_async(campaign_id, input):
-    lock = acquire_campaign_lock(campaign_id)
-    if not lock.acquire(blocking=True, timeout=1):
-        # Should NEVER happen in normal operation
-        logger.error(f"Lock contention for {campaign_id} - routing bug!")
-        raise Retry()
-
-    try:
-        # Single-threaded per campaign, can delegate I/O
-        context = build_context(campaign_id)
-        llm_result = call_llm_task.delay(context, input).get()
-        save_turn(campaign_id, llm_result)
-    finally:
-        lock.release()
-```
-
-**Worker architecture:**
-- `automation:{0-3}`: Campaign coordination (single-threaded per campaign)
-- `llm`: Stateless LLM calls (I/O-bound pool)
-- `mcp`: Stateless tool execution
 
 **Implementation Path:**
 1. Add campaign-based routing to celery_app.py
@@ -64,7 +97,7 @@ def process_player_chat_async(campaign_id, input):
 
 **Priority:** Medium (optimization, current approach is correct)
 
-## State Storage Migration (Post-Async Processing)
+### State Storage Migration (Post-Async Processing)
 
 Current file-based storage works with campaign-level task locking but may need migration for scaling.
 
@@ -75,15 +108,9 @@ Current file-based storage works with campaign-level task locking but may need m
 
 **Priority:** Low (defer until scaling needed)
 
-## Fine-Tuning Pipeline
+### Fine-Tuning Pipeline
 
-### Vision: Self-Improving GM Agent
-
-Self-sustaining improvement cycle: GM Agent generates training data → fine-tune specialized local models → run on consumer hardware with multimodal capabilities.
-
-### Data Collection (Infrastructure In Place)
-
-**What We Have:**
+**Data Collection (Infrastructure In Place):**
 - Complete session storage with structured JSON
 - Full metadata: player input, GM response, tool calls, timing, model used
 - LLM thinking trace capture (`LLMResponse.thinking` field, all backends)
@@ -95,22 +122,19 @@ Self-sustaining improvement cycle: GM Agent generates training data → fine-tun
 - [ ] Build dataset export tool (sessions → JSONL training format)
 - [ ] Run 50+ production sessions with thinking-enabled models
 
-### Training Pipeline (Not Started)
+**Training Pipeline (Not Started):**
 - [ ] Quality filtering pipeline (error turns, short responses, stratification)
 - [ ] QLoRA fine-tuning infrastructure (Llama/Qwen 8B base)
 - [ ] Evaluation framework (tool accuracy, rules adherence, narrative quality)
 - [ ] 4-bit GPTQ quantization for local deployment
 
-### Multimodal Integration (Future)
+**Multimodal Integration (Future):**
 - [ ] Image generation pipeline (scene illustrations via Flux)
 - [ ] Video generation for dramatic moments (experimental)
 
-### Legal Stance
-**Maximalist/conservative** for public distribution: fine-tune your own model with your own data, share code/pipeline/approach, but don't distribute weights or datasets containing copyrighted Paizo content or TOS-restricted LLM outputs.
-
 **Priority:** Long-term
 
-## Equipment Sub-Typing in pf2e-extraction
+### Equipment Sub-Typing in pf2e-extraction
 
 Weapons, armor, shields, runes, and consumables are all stored as flat `equipment`/`item` types in
 search.db. This prevents gm-agent from dynamically loading weapon/rune name lists for search query
@@ -124,113 +148,60 @@ Once available, gm-agent can load weapon/rune names from the DB at init (like co
 
 **Priority:** Low (hardcoded lists work, just won't auto-update with new content)
 
-## Agent Integrations
+### New Game Systems (RFC Phases 3-5)
+
+Phase 0-2 of the Multi-System RFC are complete. Future systems to implement:
+
+- [ ] **Ironsworn/Starforged** — Oracle tables, moves, progress tracks
+- [ ] **Blades in the Dark** — Clocks, scores, crew sheet, faction turns
+- [ ] **How to Host a Dungeon** — Layered geological history → dungeon rooms
+- [ ] **The Quiet Year** — Seasonal/card-driven procedure for session 0 worldbuilding
+- [ ] ***Without Number** — Faction turns, sandbox generators, hex/sector maps
+
+**Priority:** Medium (foundation is solid, add based on community interest)
+
+### Encounter Execution
+
+Two mutually exclusive modes per campaign. Pick one.
+
+#### Mode 1: Foundry VTT Puppeting (BUILT)
+
+The `foundryvtt-pf2e-gm-agent` module already provides full combat automation (30+ commands, bidirectional bridge).
+
+**What's missing for full agent-driven combat:**
+- [ ] Agent combat loop — backend receives `combatTurn` for NPC but doesn't yet decide and execute a full turn
+- [ ] Action sequencing — agent needs to chain commands within a turn (Stride → Strike → Strike with MAP tracking)
+- [ ] Tactical decision-making — use creature enrichment metadata (tactics, morale, behavior)
+
+#### Mode 2: Theater of the Mind (NOT BUILT)
+
+Agent-native encounter execution — no Foundry dependency, no grid.
+
+**Missing pieces:**
+- [ ] Narrative positioning layer (lightweight zones instead of grid squares)
+- [ ] Turn orchestration (agent drives initiative loop)
+- [ ] Encounter lifecycle (start/end hooks with auto-stat/treasure/XP)
+- [ ] Condition automation (persistent damage, frightened reduction, dying/recovery)
+- [ ] Action economy tracking (3 actions + reaction, MAP)
+
+**Priority:** Low (only needed if Foundry puppeting doesn't cover the use case)
+
+### Agent Integrations
 
 - [ ] Check Pathfinder Wiki agent implementation
 - [ ] Check Archives of Nethys agent implementation
 - [ ] Check Paizo Forums agent implementation
 
-## Automation Mode Enhancements
+### Analytics & Tuning
 
-### Configurable Prompts
-Allow customization of the prompts used for player chat responses and NPC turn handling.
-- Template variables for actor name, content, scene state
-- Per-campaign prompt customization
-- Default prompts with sensible defaults
-
-### Message Queuing
-Queue incoming events to handle bursts of activity gracefully.
-- Priority ordering (combat turns vs exploration chat)
-- Queue depth limits, timeout/expiry for stale messages
-- Backpressure signaling to Foundry
-
-### Dry Run Mode
-Test automation behavior without posting to Foundry.
-- Log what would be posted
-- Useful for prompt tuning and comparing configurations
-
-## Encounter Execution
-
-Two mutually exclusive modes per campaign. Pick one.
-
-### Mode 1: Foundry VTT Puppeting (BUILT)
-
-The `foundryvtt-pf2e-gm-agent` module already provides full combat automation:
-- **30+ commands**: `applyDamage`, `applyCondition`, `rollCheck`, `advanceTurn`, `spawnToken`, `moveToken`, etc.
-- **Bidirectional bridge**: Socket.IO (WebSocket) + HTTP polling fallback
-- **Full automation mode**: agent receives `combatTurn`/`playerChat` events, issues commands back
-- **ACA integration**: NPC designations, AI suggestions, persistent notes
-
-**Deployment topology:**
-- **Local Foundry + local gm-agent**: WebSocket mode (Foundry connects to gm-agent :5000)
-- **Forge-hosted Foundry + local gm-agent**: Polling mode (`FOUNDRY_MODE=polling`).
-  gm-agent reaches out to Forge via HTTP — no inbound ports needed on local infra.
-  Foundry module exposes `/api/gm-agent/events` (long-poll) and `/api/gm-agent/command`.
-  Poll interval default 2s, fine for combat-turn granularity.
-
-**What's missing for full agent-driven combat:**
-- [ ] Agent combat loop — backend receives `combatTurn` for NPC but doesn't yet
-  decide and execute a full turn (search creature tactics → pick actions → issue
-  commands). Currently delegates to ACA or waits for GM input.
-- [ ] Action sequencing — agent needs to chain commands within a turn
-  (e.g., Stride → Strike → Strike with MAP tracking)
-- [ ] Tactical decision-making — use creature enrichment metadata (tactics, morale,
-  behavior) to inform NPC action selection via LLM
-
-### Mode 2: Theater of the Mind (NOT BUILT)
-
-Agent-native encounter execution — no Foundry dependency, no grid.
-For CLI/chat-only play or when Foundry isn't available.
-
-**What TotM needs (vs Foundry):**
-- **Doesn't need:** Grid positions, token movement, range calculations, walls/lighting
-- **Does need:** Narrative positioning ("the archers are on the balcony"), who's engaged with whom, conditions/HP, initiative order
-
-**Existing infrastructure:**
-- `EncounterServer` — initiative, participants, HP/conditions (5 tools, stateless)
-- `SubsystemServer` — VP tracking, chase/infiltration state (5 tools, campaign-scoped)
-- `CreatureModifierServer` — elite/weak, templates, scaffolding (7 tools, stateless)
-- Creature stats via RAG search (remaster boost handles dedup)
-- AP encounter areas already extracted (locations, hazards, treasure, read-aloud)
-
-**Missing pieces:**
-- [ ] **Narrative positioning layer** — lightweight "zones" instead of grid squares
-  - Zone examples: "melee range", "balcony", "behind cover", "flanking"
-  - Track which participants are in which zone
-  - No distance math — GM adjudicates movement between zones
-- [ ] **Turn orchestration** — agent drives initiative loop
-  - Prompt NPC actions based on tactics/personality from creature metadata
-  - Present player turns with relevant context (conditions, nearby threats)
-  - Track reactions and free actions within the round
-- [ ] **Encounter lifecycle** — start/end hooks
-  - `start_encounter` pulls creature stats + AP encounter area context
-  - Auto-surface tactics from creature enrichment metadata
-  - `end_encounter` logs XP, treasure, updates AP progress
-- [ ] **Condition automation** — persistent damage, frightened reduction, dying/recovery
-  - Tick conditions at start/end of turn per PF2e rules
-  - Agent shouldn't have to remember to reduce Frightened manually
-- [ ] **Action economy tracking** — 3 actions + reaction per turn
-  - Track MAP (multiple attack penalty) state within a turn
-  - Flag illegal action sequences (e.g., 4 actions)
-
-**Design decisions (deferred):**
-- How much rules automation vs GM adjudication? (PF2e has complex action interactions)
-- Should the agent roll dice or just suggest DCs and let the GM roll?
-- How to handle AoE/splash in zones without precise positioning?
-- Integrate with dice server or keep combat dice separate?
-
-**Priority:** Low (only needed if Foundry puppeting doesn't cover the use case)
-
-## Analytics & Tuning
-
-### Response Time Analytics
+**Response Time Analytics:**
 - Dashboard for latency percentiles
 - Alert on degraded performance
 - Correlation with tool usage
 
-### Tool Usage Analytics
-**Current:** TurnMetadata includes `tool_count` and `tool_usage` dict.
+**Tool Usage Analytics:**
+Current: TurnMetadata includes `tool_count` and `tool_usage` dict.
 
-**Future:**
+Future:
 - Per-tool success/failure rates
 - Identify unused or underutilized tools

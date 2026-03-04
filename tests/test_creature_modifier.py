@@ -207,12 +207,13 @@ class TestCreatureModifierServer:
             return []
 
         mock.search.side_effect = search_side_effect
+        mock.get_creation_table.return_value = {}
         return mock
 
     @pytest.fixture
     def server(self, mock_search):
         """Create CreatureModifierServer with mocked search."""
-        with patch("gm_agent.mcp.creature_modifier.PathfinderSearch", return_value=mock_search):
+        with patch("gm_agent.systems.pf2e.servers.creature_modifier.PathfinderSearch", return_value=mock_search):
             s = CreatureModifierServer()
             yield s
 
@@ -226,7 +227,9 @@ class TestCreatureModifierServer:
         assert "scaffold_hazard" in tool_names
         assert "scaffold_troop" in tool_names
         assert "scaffold_swarm" in tool_names
-        assert len(tools) == 7
+        assert "scaffold_haunt" in tool_names
+        assert "design_creature" in tool_names
+        assert len(tools) == 9
 
     # --- apply_elite_weak tests ---
 
@@ -531,6 +534,232 @@ class TestStatTableCompleteness:
     def test_role_adjustments_all_roles(self):
         expected_roles = {"brute", "sniper", "soldier", "skirmisher", "spellcaster"}
         assert set(ROLE_ADJUSTMENTS.keys()) == expected_roles
+
+
+class TestScaffoldHaunt:
+    """Tests for scaffold_haunt tool."""
+
+    @pytest.fixture
+    def server(self):
+        with patch.object(
+            __import__(
+                "gm_agent.systems.pf2e.servers.creature_modifier",
+                fromlist=["CreatureModifierServer"],
+            ).CreatureModifierServer,
+            "__init__",
+            lambda self, **kwargs: (
+                setattr(self, "search", MagicMock()),
+                setattr(self, "backend", None),
+                setattr(self, "_tools", []),
+            ) and None,
+        ):
+            from gm_agent.systems.pf2e.servers.creature_modifier import (
+                CreatureModifierServer,
+                HAZARD_STATS_BY_LEVEL,
+            )
+
+            class _Server(CreatureModifierServer):
+                def __init__(self):
+                    self.search = MagicMock()
+                    self.backend = None
+                    self._tools = self._build_tools()
+
+            return _Server()
+
+    def test_scaffold_haunt_returns_stat_block(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer, HAZARD_STATS_BY_LEVEL
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        server = _Server()
+        result = server.call_tool("scaffold_haunt", {
+            "level": 4,
+            "name": "Weeping Widow",
+            "trigger": "When a living creature enters room 7",
+            "disable_skills": "Religion,Occultism",
+        })
+        assert result.success
+        assert "Weeping Widow" in result.data
+        assert "Level 4" in result.data
+        assert "Religion" in result.data
+        assert "Occultism" in result.data
+        assert "spiritual_immunity" in result.data or "spiritual immunity" in result.data.lower()
+
+    def test_scaffold_haunt_returns_config_json(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        server = _Server()
+        result = server.call_tool("scaffold_haunt", {
+            "level": 3,
+            "name": "Blood Oath",
+            "trigger": "When entering the chapel",
+        })
+        assert result.success
+        # Config JSON should be embedded
+        assert '"disable_conditions"' in result.data
+        assert '"spiritual_immunity"' in result.data
+        assert '"trigger_condition"' in result.data
+
+    def test_scaffold_haunt_correct_dcs(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import (
+            CreatureModifierServer, HAZARD_STATS_BY_LEVEL
+        )
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        server = _Server()
+        level = 5
+        result = server.call_tool("scaffold_haunt", {"level": level, "name": "Test"})
+        assert result.success
+        expected_dc = str(HAZARD_STATS_BY_LEVEL[level]["disable_dc"])
+        assert expected_dc in result.data
+
+    def test_scaffold_haunt_complex_uses_2_successes(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        server = _Server()
+        result = server.call_tool("scaffold_haunt", {
+            "level": 3,
+            "name": "Complex Haunt",
+            "complexity": "complex",
+        })
+        assert result.success
+        assert "2 successes needed" in result.data
+
+    def test_scaffold_haunt_various_levels(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        server = _Server()
+        for level in (-1, 0, 5, 10, 20, 25):
+            result = server.call_tool("scaffold_haunt", {"level": level})
+            assert result.success, f"Failed for level {level}"
+
+
+class TestDesignCreature:
+    """Tests for design_creature tool."""
+
+    @pytest.fixture
+    def server_no_backend(self):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
+
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._tools = self._build_tools()
+
+        return _Server()
+
+    @pytest.fixture
+    def mock_backend(self):
+        from gm_agent.models.base import LLMResponse
+        backend = MagicMock()
+        backend.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "name": "Forge Wraith",
+                "level": 5,
+                "abilities": [
+                    {
+                        "name": "Searing Touch",
+                        "action_cost": "[one-action]",
+                        "traits": ["fire", "magical"],
+                        "description": "The forge wraith touches a creature, dealing 2d6 fire damage (DC 22 basic Reflex).",
+                    },
+                    {
+                        "name": "Imprisoned Lament",
+                        "action_cost": "[reaction]",
+                        "traits": ["auditory", "emotion", "mental"],
+                        "description": "The forge wraith wails when struck, demoralizing all creatures within 30 feet (DC 22 Will).",
+                    },
+                ],
+            }),
+        )
+        return backend
+
+    @pytest.fixture
+    def server_with_backend(self, mock_backend):
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
+
+        class _Server(CreatureModifierServer):
+            def __init__(self, backend):
+                self.search = MagicMock()
+                self.backend = backend
+                self._tools = self._build_tools()
+
+        return _Server(mock_backend)
+
+    def test_design_creature_scaffold_only(self, server_no_backend):
+        """No concept/abilities → pure scaffold, no LLM required."""
+        result = server_no_backend.call_tool("design_creature", {
+            "level": 3,
+            "role": "brute",
+            "name": "Cave Troll",
+        })
+        assert result.success
+        assert "Cave Troll" in result.data
+        assert "Level 3" in result.data
+
+    def test_design_creature_no_level_no_concept_fails(self, server_no_backend):
+        """No level and no concept → error."""
+        result = server_no_backend.call_tool("design_creature", {
+            "name": "Mystery Creature",
+        })
+        assert not result.success
+        assert "level" in result.error.lower()
+
+    def test_design_creature_no_backend_error(self, server_no_backend):
+        """concept provided but no backend → clean error."""
+        result = server_no_backend.call_tool("design_creature", {
+            "level": 5,
+            "concept": "A forge-bound fire elemental that mourns its imprisonment",
+        })
+        assert not result.success
+        assert "backend" in result.error.lower()
+
+    def test_design_creature_with_backend(self, server_with_backend):
+        """concept + backend → calls LLM, returns scaffold + abilities."""
+        result = server_with_backend.call_tool("design_creature", {
+            "level": 5,
+            "concept": "A forge-bound fire elemental that mourns its imprisonment",
+            "name": "Forge Wraith",
+        })
+        assert result.success
+        assert "Forge Wraith" in result.data
+        assert "Searing Touch" in result.data
+
+    def test_design_creature_backend_called_once(self, server_with_backend, mock_backend):
+        """LLM is called exactly once."""
+        server_with_backend.call_tool("design_creature", {
+            "level": 5,
+            "concept": "A test creature",
+        })
+        assert mock_backend.chat.call_count == 1
 
 
 if __name__ == "__main__":

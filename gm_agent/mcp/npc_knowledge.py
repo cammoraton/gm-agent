@@ -278,6 +278,90 @@ class NPCKnowledgeServer(MCPServer):
                     ),
                 ],
             ),
+            ToolDef(
+                name="apply_knowledge_decay",
+                description=(
+                    "Apply memory decay to knowledge entries. "
+                    "Reduces importance based on decay_rate and removes entries that reach 0. "
+                    "Can be applied to all characters or a single named character."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="days_passed",
+                        type="integer",
+                        description="Number of in-game days that have passed",
+                        required=False,
+                        default=1,
+                    ),
+                    ToolParameter(
+                        name="character_name",
+                        type="string",
+                        description="Apply decay only to this character (optional; default: all characters)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="update_knowledge",
+                description=(
+                    "Update an existing knowledge entry's importance, sharing condition, or tags. "
+                    "Use knowledge ID from query_npc_knowledge."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="knowledge_id",
+                        type="integer",
+                        description="ID of the knowledge entry to update",
+                    ),
+                    ToolParameter(
+                        name="importance",
+                        type="integer",
+                        description="New importance value (1-10)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="sharing_condition",
+                        type="string",
+                        description="New sharing condition (free, trust, persuasion_dc_X, duress, never)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="add_tags",
+                        type="string",
+                        description="Comma-separated tags to add",
+                        required=False,
+                        default="",
+                    ),
+                    ToolParameter(
+                        name="remove_tags",
+                        type="string",
+                        description="Comma-separated tags to remove",
+                        required=False,
+                        default="",
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="mark_knowledge_contested",
+                description=(
+                    "Mark a knowledge entry as contested (uncertain/unreliable). "
+                    "Sets importance to 1 and adds the 'contested' tag."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="knowledge_id",
+                        type="integer",
+                        description="ID of the knowledge entry to mark as contested",
+                    ),
+                    ToolParameter(
+                        name="reason",
+                        type="string",
+                        description="Why this knowledge is contested",
+                        required=False,
+                        default="",
+                    ),
+                ],
+            ),
         ]
 
     def list_tools(self) -> list[ToolDef]:
@@ -301,6 +385,12 @@ class NPCKnowledgeServer(MCPServer):
                 return self._query_party_knowledge(args)
             elif name == "has_party_learned":
                 return self._has_party_learned(args)
+            elif name == "apply_knowledge_decay":
+                return self._apply_knowledge_decay(args)
+            elif name == "update_knowledge":
+                return self._update_knowledge(args)
+            elif name == "mark_knowledge_contested":
+                return self._mark_knowledge_contested(args)
             else:
                 return ToolResult(success=False, error=f"Unknown tool: {name}")
         except Exception as e:
@@ -552,6 +642,116 @@ class NPCKnowledgeServer(MCPServer):
             lines.append(f"  - \"{k.content}\" (source: {k.source or 'unknown'})")
 
         return ToolResult(success=True, data="\n".join(lines))
+
+    def _apply_knowledge_decay(self, args: dict[str, Any]) -> ToolResult:
+        """Apply memory decay to knowledge entries."""
+        days_passed = int(args.get("days_passed", 1))
+        character_name = args.get("character_name")
+
+        if character_name:
+            # Per-character decay
+            character = self.characters.get_by_name(character_name)
+            if not character:
+                return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+            entries = self.knowledge.query_knowledge(character_id=character.id, limit=10000)
+            decayed = 0
+            removed = 0
+            for entry in entries:
+                if entry.decay_rate > 0 and entry.id is not None:
+                    new_importance = entry.importance - entry.decay_rate * days_passed
+                    if new_importance <= 0:
+                        self.knowledge.delete(entry.id)
+                        removed += 1
+                    else:
+                        self.knowledge.update_importance(entry.id, int(new_importance))
+                        decayed += 1
+
+            return ToolResult(
+                success=True,
+                data=f"Decayed {decayed} entries for {character.name} (removed {removed} with importance ≤ 0).",
+            )
+
+        # Global decay
+        removed = self.knowledge.apply_decay(days_passed)
+        return ToolResult(
+            success=True,
+            data=f"Applied decay for {days_passed} day(s). Removed {removed} entries with importance ≤ 0.",
+        )
+
+    def _update_knowledge(self, args: dict[str, Any]) -> ToolResult:
+        """Update fields on a knowledge entry."""
+        knowledge_id = args.get("knowledge_id")
+        if knowledge_id is None:
+            return ToolResult(success=False, error="knowledge_id is required")
+        knowledge_id = int(knowledge_id)
+
+        entry = self.knowledge.get_by_id(knowledge_id)
+        if not entry:
+            return ToolResult(success=False, error=f"Knowledge entry {knowledge_id} not found")
+
+        # Parse tag strings
+        add_tags_str = args.get("add_tags", "")
+        remove_tags_str = args.get("remove_tags", "")
+        add_tags = [t.strip() for t in add_tags_str.split(",") if t.strip()] if add_tags_str else None
+        remove_tags = [t.strip() for t in remove_tags_str.split(",") if t.strip()] if remove_tags_str else None
+
+        importance = args.get("importance")
+        sharing_condition = args.get("sharing_condition")
+
+        success = self.knowledge.update_knowledge(
+            knowledge_id,
+            importance=importance,
+            sharing_condition=sharing_condition,
+            add_tags=add_tags,
+            remove_tags=remove_tags,
+        )
+
+        if not success:
+            return ToolResult(success=False, error=f"Failed to update knowledge entry {knowledge_id}")
+
+        snippet = entry.content[:60] + ("..." if len(entry.content) > 60 else "")
+        changes = []
+        if importance is not None:
+            changes.append(f"importance → {importance}")
+        if sharing_condition is not None:
+            changes.append(f"sharing → {sharing_condition}")
+        if add_tags:
+            changes.append(f"added tags: {add_tags}")
+        if remove_tags:
+            changes.append(f"removed tags: {remove_tags}")
+
+        return ToolResult(
+            success=True,
+            data=f"Updated [{entry.character_name}] \"{snippet}\" — {', '.join(changes) or 'no changes'}",
+        )
+
+    def _mark_knowledge_contested(self, args: dict[str, Any]) -> ToolResult:
+        """Mark a knowledge entry as contested."""
+        knowledge_id = args.get("knowledge_id")
+        if knowledge_id is None:
+            return ToolResult(success=False, error="knowledge_id is required")
+        knowledge_id = int(knowledge_id)
+
+        entry = self.knowledge.get_by_id(knowledge_id)
+        if not entry:
+            return ToolResult(success=False, error=f"Knowledge entry {knowledge_id} not found")
+
+        success = self.knowledge.update_knowledge(
+            knowledge_id,
+            importance=1,
+            add_tags=["contested"],
+        )
+
+        if not success:
+            return ToolResult(success=False, error=f"Failed to update knowledge entry {knowledge_id}")
+
+        snippet = entry.content[:60] + ("..." if len(entry.content) > 60 else "")
+        reason_note = f" Reason: {args['reason']}" if args.get("reason") else ""
+        return ToolResult(
+            success=True,
+            data=f"Marked as contested: [{entry.character_name}] \"{snippet}\" (importance → 1, tagged 'contested').{reason_note}",
+        )
 
     def close(self) -> None:
         """Close resources."""

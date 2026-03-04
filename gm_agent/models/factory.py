@@ -7,6 +7,8 @@ from ..config import (
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
+    RETRIEVAL_BACKEND,
+    RETRIEVAL_MODEL,
 )
 from .base import LLMBackend
 
@@ -62,6 +64,39 @@ def get_backend(name: str | None = None) -> LLMBackend:
         )
 
     return backend_class()
+
+
+def _get_backend_with_model(name: str, model: str | None) -> LLMBackend:
+    """Get a backend instance, optionally overriding the model.
+
+    Args:
+        name: Backend name (ollama, openai, anthropic, openrouter).
+        model: Optional model override. None uses the backend's default.
+
+    Returns:
+        Configured LLMBackend instance.
+    """
+    backend_class = _get_backend_class(name)
+
+    if name == "openrouter":
+        return backend_class(
+            model=model or OPENROUTER_MODEL,
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+        )
+
+    if model:
+        return backend_class(model=model)
+    return backend_class()
+
+
+def get_retrieval_backend() -> LLMBackend:
+    """Get backend for retrieval phase (tool selection) in split mode."""
+    name = RETRIEVAL_BACKEND or LLM_BACKEND
+    model = RETRIEVAL_MODEL
+    if name == "openrouter" and not model:
+        model = OPENROUTER_MODEL
+    return _get_backend_with_model(name, model)
 
 
 def list_backends() -> list[str]:

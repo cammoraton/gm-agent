@@ -24,7 +24,7 @@ class MockLLM(LLMBackend):
         self.response_text = response_text
         self.calls: list[tuple] = []
 
-    def chat(self, messages, tools=None):
+    def chat(self, messages, tools=None, thinking=None, temperature=None):
         self.calls.append((messages, tools))
         return LLMResponse(text=self.response_text, tool_calls=[])
 

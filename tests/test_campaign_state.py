@@ -8,6 +8,7 @@ from gm_agent.mcp.campaign_state import CampaignStateServer
 from gm_agent.storage.campaign import CampaignStore
 from gm_agent.storage.session import SessionStore
 from gm_agent.storage.schemas import SceneState
+from gm_agent.systems.pf2e.campaign_tools import PF2eCampaignToolPlugin
 
 
 @pytest.fixture
@@ -50,6 +51,51 @@ def campaign_state_setup(tmp_path: Path):
     server.close()
 
     # Restore original stores
+    cs_module.campaign_store = original_campaign_store
+    cs_module.session_store = original_session_store
+    cs_module.CAMPAIGNS_DIR = original_campaigns_dir
+
+
+@pytest.fixture
+def pf2e_campaign_state_setup(tmp_path: Path):
+    """Set up campaign, session, and CampaignStateServer with PF2e plugin."""
+    campaigns_dir = tmp_path / "campaigns"
+    campaigns_dir.mkdir()
+
+    campaign_store_local = CampaignStore(base_dir=campaigns_dir)
+    session_store_local = SessionStore(base_dir=campaigns_dir)
+
+    campaign = campaign_store_local.create(
+        name="PF2e Plugin Test Campaign",
+        background="Test background",
+    )
+    session = session_store_local.start(campaign.id)
+
+    import gm_agent.mcp.campaign_state as cs_module
+
+    original_campaign_store = cs_module.campaign_store
+    original_session_store = cs_module.session_store
+    original_campaigns_dir = cs_module.CAMPAIGNS_DIR
+
+    cs_module.campaign_store = campaign_store_local
+    cs_module.session_store = session_store_local
+    cs_module.CAMPAIGNS_DIR = campaigns_dir
+
+    plugin = PF2eCampaignToolPlugin(campaign.id, base_dir=campaigns_dir)
+    server = CampaignStateServer(campaign.id, system_plugins=[plugin])
+
+    yield {
+        "server": server,
+        "campaign": campaign,
+        "session": session,
+        "campaign_store": campaign_store_local,
+        "session_store": session_store_local,
+        "campaigns_dir": campaigns_dir,
+        "plugin": plugin,
+    }
+
+    server.close()
+
     cs_module.campaign_store = original_campaign_store
     cs_module.session_store = original_session_store
     cs_module.CAMPAIGNS_DIR = original_campaigns_dir
@@ -609,11 +655,11 @@ class TestUnknownTool:
 class TestTravelTime:
     """Phase 4D: calculate_travel_time tool."""
 
-    def test_travel_time_basic(self, campaign_state_setup):
+    def test_travel_time_basic(self, pf2e_campaign_state_setup):
         """Basic travel calculation with connected locations."""
-        server = campaign_state_setup["server"]
-        campaigns_dir = campaign_state_setup["campaigns_dir"]
-        campaign = campaign_state_setup["campaign"]
+        server = pf2e_campaign_state_setup["server"]
+        campaigns_dir = pf2e_campaign_state_setup["campaigns_dir"]
+        campaign = pf2e_campaign_state_setup["campaign"]
 
         from gm_agent.storage.locations import LocationStore
         loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
@@ -633,11 +679,11 @@ class TestTravelTime:
         assert "Darkwood Forest" in result.data
         assert "miles" in result.data.lower()
 
-    def test_travel_time_difficult_terrain(self, campaign_state_setup):
+    def test_travel_time_difficult_terrain(self, pf2e_campaign_state_setup):
         """Difficult terrain should halve speed."""
-        server = campaign_state_setup["server"]
-        campaigns_dir = campaign_state_setup["campaigns_dir"]
-        campaign = campaign_state_setup["campaign"]
+        server = pf2e_campaign_state_setup["server"]
+        campaigns_dir = pf2e_campaign_state_setup["campaigns_dir"]
+        campaign = pf2e_campaign_state_setup["campaign"]
 
         from gm_agent.storage.locations import LocationStore
         loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
@@ -653,11 +699,11 @@ class TestTravelTime:
         assert "difficult" in result.data
         assert "x0.5" in result.data
 
-    def test_travel_time_mounted(self, campaign_state_setup):
+    def test_travel_time_mounted(self, pf2e_campaign_state_setup):
         """Mounted travel uses 40ft speed."""
-        server = campaign_state_setup["server"]
-        campaigns_dir = campaign_state_setup["campaigns_dir"]
-        campaign = campaign_state_setup["campaign"]
+        server = pf2e_campaign_state_setup["server"]
+        campaigns_dir = pf2e_campaign_state_setup["campaigns_dir"]
+        campaign = pf2e_campaign_state_setup["campaign"]
 
         from gm_agent.storage.locations import LocationStore
         loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
@@ -673,11 +719,11 @@ class TestTravelTime:
         assert "40 ft" in result.data
         assert "Mounted" in result.data
 
-    def test_travel_time_forced_march(self, campaign_state_setup):
+    def test_travel_time_forced_march(self, pf2e_campaign_state_setup):
         """Forced march should increase distance."""
-        server = campaign_state_setup["server"]
-        campaigns_dir = campaign_state_setup["campaigns_dir"]
-        campaign = campaign_state_setup["campaign"]
+        server = pf2e_campaign_state_setup["server"]
+        campaigns_dir = pf2e_campaign_state_setup["campaigns_dir"]
+        campaign = pf2e_campaign_state_setup["campaign"]
 
         from gm_agent.storage.locations import LocationStore
         loc_store = LocationStore(campaign.id, base_dir=campaigns_dir)
@@ -693,9 +739,9 @@ class TestTravelTime:
         assert "Forced March" in result.data
         assert "Fort saves" in result.data
 
-    def test_travel_time_missing_location(self, campaign_state_setup):
+    def test_travel_time_missing_location(self, pf2e_campaign_state_setup):
         """Should require both locations."""
-        server = campaign_state_setup["server"]
+        server = pf2e_campaign_state_setup["server"]
         result = server.call_tool("calculate_travel_time", {
             "from_location": "Otari",
         })
@@ -705,9 +751,9 @@ class TestTravelTime:
 class TestHazardDetection:
     """Phase 4E: check_hazard_detection tool."""
 
-    def test_hazard_detection_no_party(self, campaign_state_setup):
+    def test_hazard_detection_no_party(self, pf2e_campaign_state_setup):
         """Without party perception, gives general info."""
-        server = campaign_state_setup["server"]
+        server = pf2e_campaign_state_setup["server"]
         result = server.call_tool("check_hazard_detection", {
             "stealth_dc": 25,
         })
@@ -715,10 +761,10 @@ class TestHazardDetection:
         assert "25" in result.data
         assert "Perception" in result.data
 
-    def test_hazard_detection_with_party(self, campaign_state_setup):
+    def test_hazard_detection_with_party(self, pf2e_campaign_state_setup):
         """With party perception data, categorizes PCs."""
         import json
-        server = campaign_state_setup["server"]
+        server = pf2e_campaign_state_setup["server"]
         result = server.call_tool("check_hazard_detection", {
             "stealth_dc": 22,
             "searching": True,
@@ -733,10 +779,10 @@ class TestHazardDetection:
         assert "Auto-Detect" in result.data
         assert "Ezren" in result.data
 
-    def test_hazard_detection_scouting(self, campaign_state_setup):
+    def test_hazard_detection_scouting(self, pf2e_campaign_state_setup):
         """Scouting should add initiative bonus note."""
         import json
-        server = campaign_state_setup["server"]
+        server = pf2e_campaign_state_setup["server"]
         result = server.call_tool("check_hazard_detection", {
             "stealth_dc": 20,
             "scouting": True,
@@ -745,13 +791,84 @@ class TestHazardDetection:
         assert result.success
         assert "Scout" in result.data or "initiative" in result.data
 
-    def test_hazard_detection_unlikely(self, campaign_state_setup):
+    def test_hazard_detection_unlikely(self, pf2e_campaign_state_setup):
         """Low perception PCs should be in 'unlikely' category."""
         import json
-        server = campaign_state_setup["server"]
+        server = pf2e_campaign_state_setup["server"]
         result = server.call_tool("check_hazard_detection", {
             "stealth_dc": 30,
             "party_perception": json.dumps({"Weakling": 5}),
         })
         assert result.success
         assert "Unlikely" in result.data
+
+
+class TestSystemToolPlugin:
+    """Tests for the SystemToolPlugin architecture."""
+
+    def test_no_plugin_no_pf2e_tools(self, campaign_state_setup):
+        """Without plugins, PF2e tools should not appear."""
+        server = campaign_state_setup["server"]
+        tool_names = [t.name for t in server.list_tools()]
+        assert "calculate_travel_time" not in tool_names
+        assert "check_hazard_detection" not in tool_names
+        assert "ap_progress" not in tool_names
+        assert "treasure" not in tool_names
+
+    def test_plugin_tools_appear(self, pf2e_campaign_state_setup):
+        """With PF2e plugin, its tools should appear in list_tools."""
+        server = pf2e_campaign_state_setup["server"]
+        tool_names = [t.name for t in server.list_tools()]
+        assert "calculate_travel_time" in tool_names
+        assert "check_hazard_detection" in tool_names
+        assert "ap_progress" in tool_names
+        assert "treasure" in tool_names
+
+    def test_plugin_tool_dispatch(self, pf2e_campaign_state_setup):
+        """Plugin tools should be callable via server.call_tool."""
+        server = pf2e_campaign_state_setup["server"]
+        result = server.call_tool("check_hazard_detection", {"stealth_dc": 20})
+        assert result.success
+
+    def test_plugin_close_called(self, tmp_path: Path):
+        """Server.close() should call plugin.close()."""
+        campaigns_dir = tmp_path / "campaigns"
+        campaigns_dir.mkdir()
+
+        campaign_store_local = CampaignStore(base_dir=campaigns_dir)
+        session_store_local = SessionStore(base_dir=campaigns_dir)
+        campaign = campaign_store_local.create(name="Close Test", background="Test")
+        session_store_local.start(campaign.id)
+
+        import gm_agent.mcp.campaign_state as cs_module
+        original_campaign_store = cs_module.campaign_store
+        original_session_store = cs_module.session_store
+        original_campaigns_dir = cs_module.CAMPAIGNS_DIR
+        cs_module.campaign_store = campaign_store_local
+        cs_module.session_store = session_store_local
+        cs_module.CAMPAIGNS_DIR = campaigns_dir
+
+        plugin = PF2eCampaignToolPlugin(campaign.id, base_dir=campaigns_dir)
+        # Force lazy-init of stores
+        _ = plugin.ap_progress
+        _ = plugin.treasure
+        assert plugin._ap_progress_store is not None
+        assert plugin._treasure_store is not None
+
+        server = CampaignStateServer(campaign.id, system_plugins=[plugin])
+        server.close()
+
+        # After close, plugin stores should be None
+        assert plugin._ap_progress_store is None
+        assert plugin._treasure_store is None
+
+        cs_module.campaign_store = original_campaign_store
+        cs_module.session_store = original_session_store
+        cs_module.CAMPAIGNS_DIR = original_campaigns_dir
+
+    def test_unknown_tool_with_plugin(self, pf2e_campaign_state_setup):
+        """Unknown tools should still return error even with plugins."""
+        server = pf2e_campaign_state_setup["server"]
+        result = server.call_tool("totally_fake_tool", {})
+        assert not result.success
+        assert "unknown tool" in result.error.lower()

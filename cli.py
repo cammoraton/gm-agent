@@ -36,11 +36,33 @@ def campaign():
 @campaign.command("create")
 @click.argument("name")
 @click.option("--background", "-b", default="", help="Campaign background text")
-def campaign_create(name: str, background: str):
+@click.option("--systems", "-s", default=None, help="Game systems, comma-separated (e.g. 'pf2e,microscope')")
+@click.option("--primary", "-p", default=None, help="Primary system (default: first in --systems)")
+def campaign_create(name: str, background: str, systems: str | None, primary: str | None):
     """Create a new campaign."""
+    from gm_agent.systems import list_systems
+
+    kwargs: dict = {}
+    if systems:
+        valid_names = {s["name"] for s in list_systems()}
+        game_systems = [s.strip() for s in systems.split(",") if s.strip()]
+        for s in game_systems:
+            if s not in valid_names:
+                click.echo(f"Error: Unknown system '{s}'. Valid: {', '.join(sorted(valid_names))}", err=True)
+                sys.exit(1)
+        kwargs["game_systems"] = game_systems
+        kwargs["primary_system"] = primary or game_systems[0]
+        if kwargs["primary_system"] not in game_systems:
+            click.echo(f"Error: Primary system '{kwargs['primary_system']}' not in systems list.", err=True)
+            sys.exit(1)
+    elif primary:
+        click.echo("Error: --primary requires --systems.", err=True)
+        sys.exit(1)
+
     try:
-        c = campaign_store.create(name, background=background)
+        c = campaign_store.create(name, background=background, **kwargs)
         click.echo(f"Created campaign: {c.id}")
+        click.echo(f"  Systems: {', '.join(c.game_systems)} (primary: {c.primary_system})")
         click.echo(f"  Directory: {campaign_store._campaign_dir(c.id)}")
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
@@ -60,7 +82,10 @@ def campaign_list():
         sessions = session_store.list(c.id)
         current = session_store.get_current(c.id)
         status = " (active session)" if current else ""
-        click.echo(f"  {c.id}: {c.name} [{len(sessions)} sessions]{status}")
+        systems_info = ""
+        if c.game_systems != ["pf2e"]:
+            systems_info = f" ({', '.join(c.game_systems)})"
+        click.echo(f"  {c.id}: {c.name} [{len(sessions)} sessions]{systems_info}{status}")
 
 
 @campaign.command("show")
@@ -74,6 +99,7 @@ def campaign_show(campaign_id: str):
 
     click.echo(f"Campaign: {c.name}")
     click.echo(f"  ID: {c.id}")
+    click.echo(f"  Systems: {', '.join(c.game_systems)} (primary: {c.primary_system})")
     click.echo(f"  Created: {c.created_at}")
 
     if c.background:
@@ -637,6 +663,81 @@ def campaign_crunch(
         pipeline.close()
 
 
+@campaign.command("export-annotations")
+@click.argument("campaign_id")
+@click.option("--output", "-o", default=None, help="Output file (default: stdout)")
+def campaign_export_annotations(campaign_id: str, output: str | None):
+    """Export data quality annotations as QueueEntry-compatible JSON.
+
+    Produces a JSON array that can be imported into the pf2e-extraction
+    pipeline's ExtractionQueue via `consolidate --import-annotations`.
+
+    \b
+    Examples:
+      gm campaign export-annotations my-campaign
+      gm campaign export-annotations my-campaign -o /tmp/annotations.json
+    """
+    import json
+
+    from gm_agent.systems.pf2e.storage.annotations import AnnotationStore
+
+    c = campaign_store.get(campaign_id)
+    if not c:
+        click.echo(f"Campaign '{campaign_id}' not found.", err=True)
+        sys.exit(1)
+
+    store = AnnotationStore(campaign_id)
+    try:
+        items = store.list_annotations()
+        if not items:
+            click.echo("No annotations to export.", err=True)
+            sys.exit(0)
+
+        # Map severity → priority
+        severity_to_priority = {
+            "critical": 1, "high": 2, "medium": 3, "low": 4,
+        }
+        # Map issue_type → reason
+        issue_to_reason = {
+            "truncated": "low_quality",
+            "wrong_info": "low_quality",
+            "mistyped": "name_mismatch",
+            "missing": "missing_content",
+            "search_miss": "missing_content",
+        }
+
+        queue_entries = []
+        for item in items:
+            issue_type = item.get("issue_type", "wrong_info")
+            severity = item.get("severity", "medium")
+            desc = item.get("description", "")
+            notes = f"[agent:{issue_type}] {desc}" if desc else f"[agent:{issue_type}]"
+
+            queue_entries.append({
+                "name": item["entity_name"],
+                "type": item.get("entity_type", ""),
+                "book": item.get("book", ""),
+                "page": item.get("page"),
+                "reason": issue_to_reason.get(issue_type, "low_quality"),
+                "priority": severity_to_priority.get(severity, 3),
+                "quality_score": None,
+                "suggested_pages": [item["page"]] if item.get("page") else [],
+                "notes": notes,
+            })
+
+        json_output = json.dumps(queue_entries, indent=2, default=str)
+
+        if output:
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(json_output, encoding="utf-8")
+            click.echo(f"Exported {len(queue_entries)} annotations to {output}")
+        else:
+            click.echo(json_output)
+
+    finally:
+        store.close()
+
+
 # ============================================================================
 # Session commands
 # ============================================================================
@@ -651,7 +752,14 @@ def session():
 @session.command("start")
 @click.argument("campaign_id")
 @click.option("--verbose", "-v", is_flag=True, help="Show tool calls")
-def session_start(campaign_id: str, verbose: bool):
+@click.option(
+    "--backend",
+    "-b",
+    type=click.Choice(["ollama", "openai", "anthropic", "openrouter"]),
+    default=None,
+    help="LLM backend to use (default: from LLM_BACKEND env)",
+)
+def session_start(campaign_id: str, verbose: bool, backend: str | None):
     """Start an interactive GM session (REPL)."""
     c = campaign_store.get(campaign_id)
     if not c:
@@ -667,7 +775,9 @@ def session_start(campaign_id: str, verbose: bool):
     click.echo("-" * 40)
 
     try:
-        agent = GMAgent(campaign_id, verbose=verbose)
+        llm = get_backend(backend) if backend else None
+        agent = GMAgent(campaign_id, llm=llm, verbose=verbose)
+        click.echo(f"Using backend: {agent.llm.get_model_name()}")
     except Exception as e:
         click.echo(f"Error initializing agent: {e}", err=True)
         sys.exit(1)

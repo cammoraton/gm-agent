@@ -78,6 +78,7 @@ class OpenAIBackend(LLMBackend):
         messages: list[Message],
         tools: list[ToolDef] | None = None,
         thinking: dict | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
 
@@ -87,6 +88,7 @@ class OpenAIBackend(LLMBackend):
             thinking: Optional reasoning config. For OpenRouter with Anthropic
                       models, pass {"type": "enabled", "budget_tokens": N}.
                       Mapped to provider-specific params as needed.
+            temperature: Sampling temperature (0.0-2.0).
 
         Includes retry logic for transient connection failures.
 
@@ -118,6 +120,8 @@ class OpenAIBackend(LLMBackend):
                 if thinking:
                     # OpenRouter passes provider-specific params via extra_body
                     kwargs["extra_body"] = {"thinking": thinking}
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
 
                 response = self.client.chat.completions.create(**kwargs)
                 return self._parse_response(response)
@@ -236,6 +240,7 @@ class OpenAIBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
         """Send messages and get a streaming response.
 
@@ -268,6 +273,8 @@ class OpenAIBackend(LLMBackend):
                 }
                 if openai_tools:
                     kwargs["tools"] = openai_tools
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
 
                 stream = self.client.chat.completions.create(**kwargs)
 

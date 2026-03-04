@@ -18,7 +18,7 @@ class MockLLM(LLMBackend):
         self.response_text = response_text
         self.calls: list[tuple] = []
 
-    def chat(self, messages, tools=None):
+    def chat(self, messages, tools=None, thinking=None, temperature=None):
         self.calls.append((messages, tools))
         return LLMResponse(text=self.response_text, tool_calls=[])
 
@@ -518,3 +518,287 @@ class TestCharacterRunnerServer:
 
         assert not result.success
         assert "Unknown tool" in result.error
+
+
+# ---------------------------------------------------------------------------
+# New behavioral depth tests
+# ---------------------------------------------------------------------------
+
+class TestMoraleCheck:
+    """Tests for rule-based check_morale tool."""
+
+    @pytest.fixture
+    def server(self, tmp_path: Path):
+        import gm_agent.mcp.character_runner as cr_module
+        original_dir = cr_module.CAMPAIGNS_DIR
+        cr_module.CAMPAIGNS_DIR = tmp_path
+        server = CharacterRunnerServer("morale-campaign", llm=None)
+        yield server
+        cr_module.CAMPAIGNS_DIR = original_dir
+
+    def _create(self, server, name, morale="", personality=""):
+        server.call_tool("create_character", {
+            "name": name,
+            "character_type": "monster",
+            "morale": morale,
+            "personality": personality,
+        })
+
+    def test_fearless_holds_at_low_hp(self, server):
+        """Fearless character holds even at 15% HP (only retreats at ≤10%)."""
+        self._create(server, "Fanatic Guard", morale="fights to death")
+        result = server.call_tool("check_morale", {
+            "character_name": "Fanatic Guard",
+            "hp_pct": 15,
+        })
+        assert result.success
+        data = result.data
+        assert data["recommendation"] == "holds"
+        assert data["disposition"] == "fearless"
+
+    def test_fearless_retreats_at_ten_pct(self, server):
+        """Fearless retreats only at ≤ 10% HP."""
+        self._create(server, "Undying Warrior", morale="never flees from battle")
+        result = server.call_tool("check_morale", {
+            "character_name": "Undying Warrior",
+            "hp_pct": 8,
+        })
+        assert result.success
+        assert result.data["recommendation"] == "retreats"
+
+    def test_standard_retreats_at_25_pct(self, server):
+        """Standard morale retreats at ≤ 25% HP."""
+        self._create(server, "City Guard", morale="")
+        result = server.call_tool("check_morale", {
+            "character_name": "City Guard",
+            "hp_pct": 20,
+        })
+        assert result.success
+        assert result.data["recommendation"] == "retreats"
+
+    def test_standard_holds_above_25_pct(self, server):
+        self._create(server, "Brave Guard", morale="")
+        result = server.call_tool("check_morale", {
+            "character_name": "Brave Guard",
+            "hp_pct": 60,
+        })
+        assert result.success
+        assert result.data["recommendation"] == "holds"
+
+    def test_cautious_retreats_at_50_pct(self, server):
+        """Cautious character retreats at 50% HP."""
+        self._create(server, "Cowardly Thug", personality="known coward who values self-preservation")
+        result = server.call_tool("check_morale", {
+            "character_name": "Cowardly Thug",
+            "hp_pct": 45,
+        })
+        assert result.success
+        assert result.data["recommendation"] in ("retreats", "surrenders")
+
+    def test_surrounded_triggers_surrender(self, server):
+        """Standard morale surrenders when surrounded AND ≤ 50% HP."""
+        self._create(server, "Cornered Bandit", morale="")
+        result = server.call_tool("check_morale", {
+            "character_name": "Cornered Bandit",
+            "hp_pct": 40,
+            "is_surrounded": True,
+        })
+        assert result.success
+        assert result.data["recommendation"] == "surrenders"
+
+    def test_allies_defeated_modifier(self, server):
+        """Standard morale acts like cautious when 2+ allies down."""
+        self._create(server, "Lone Guard", morale="")
+        # At 40% HP with 2 allies defeated — standard normally holds until 25%,
+        # but with modifier acts like cautious (retreats at 50%)
+        result = server.call_tool("check_morale", {
+            "character_name": "Lone Guard",
+            "hp_pct": 40,
+            "allies_defeated": 2,
+        })
+        assert result.success
+        assert result.data["recommendation"] in ("retreats", "surrenders")
+
+    def test_character_not_found_error(self, server):
+        result = server.call_tool("check_morale", {
+            "character_name": "Nobody",
+            "hp_pct": 50,
+        })
+        assert not result.success
+        assert "not found" in result.error
+
+
+class TestEmotionalState:
+    """Tests for set/get_emotional_state tools and prompt injection."""
+
+    @pytest.fixture
+    def server(self, tmp_path: Path):
+        import gm_agent.mcp.character_runner as cr_module
+        original_dir = cr_module.CAMPAIGNS_DIR
+        cr_module.CAMPAIGNS_DIR = tmp_path
+        mock_llm = MockLLM("Test response")
+        server = CharacterRunnerServer("emotion-campaign", llm=mock_llm)
+        yield server, mock_llm
+        cr_module.CAMPAIGNS_DIR = original_dir
+
+    def _create_npc(self, server, name):
+        server.call_tool("create_character", {
+            "name": name,
+            "character_type": "npc",
+            "personality": "Serious and stern",
+        })
+
+    def test_set_emotional_state_stores_correctly(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Captain Vira")
+        result = srv.call_tool("set_emotional_state", {
+            "character_name": "Captain Vira",
+            "emotion": "angry",
+            "intensity": 4,
+            "trigger": "betrayal by her lieutenant",
+        })
+        assert result.success
+        assert "angry" in result.data
+        assert "intensity 4/5" in result.data
+
+    def test_get_emotional_state_returns_set_values(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Guard Commander")
+        srv.call_tool("set_emotional_state", {
+            "character_name": "Guard Commander",
+            "emotion": "suspicious",
+            "intensity": 2,
+            "trigger": "strange noises",
+        })
+        result = srv.call_tool("get_emotional_state", {"character_name": "Guard Commander"})
+        assert result.success
+        data = result.data
+        assert data["emotion"] == "suspicious"
+        assert data["intensity"] == 2
+
+    def test_get_emotional_state_empty_when_unset(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Neutral Guard")
+        result = srv.call_tool("get_emotional_state", {"character_name": "Neutral Guard"})
+        assert result.success
+        assert result.data["emotion"] == ""
+        assert result.data["intensity"] == 0
+
+    def test_prompt_includes_emotion_when_set(self, server):
+        """run_npc system prompt should include the emotional state."""
+        srv, mock_llm = server
+        self._create_npc(srv, "Grieving Widow")
+        srv.call_tool("set_emotional_state", {
+            "character_name": "Grieving Widow",
+            "emotion": "grieving",
+            "intensity": 5,
+            "trigger": "her husband died last night",
+        })
+        srv.call_tool("run_npc", {
+            "npc_name": "Grieving Widow",
+            "player_input": "How are you?",
+        })
+        # Check that the system prompt contained the emotional state
+        system_msg = mock_llm.calls[-1][0][0].content
+        assert "grieving" in system_msg.lower()
+        assert "5/5" in system_msg
+
+    def test_intensity_clamped_to_1_5(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Test NPC")
+        srv.call_tool("set_emotional_state", {
+            "character_name": "Test NPC",
+            "emotion": "elated",
+            "intensity": 99,  # Should be clamped to 5
+        })
+        result = srv.call_tool("get_emotional_state", {"character_name": "Test NPC"})
+        assert result.data["intensity"] == 5
+
+
+class TestReactToEvent:
+    """Tests for LLM-driven react_to_event tool."""
+
+    @pytest.fixture
+    def server(self, tmp_path: Path):
+        import gm_agent.mcp.character_runner as cr_module
+        original_dir = cr_module.CAMPAIGNS_DIR
+        cr_module.CAMPAIGNS_DIR = tmp_path
+        # Mock LLM that returns valid JSON reaction
+        mock_llm = MockLLM(
+            '{"reaction": "Vira goes pale and grips her sword hilt.", '
+            '"suggested_emotion": "grieving", "suggested_intensity": 4, '
+            '"reason": "She was close to the fallen ally."}'
+        )
+        server = CharacterRunnerServer("react-campaign", llm=mock_llm)
+        yield server, mock_llm
+        cr_module.CAMPAIGNS_DIR = original_dir
+
+    def _create_npc(self, server, name):
+        server.call_tool("create_character", {
+            "name": name,
+            "character_type": "npc",
+            "personality": "Stoic warrior",
+        })
+
+    def test_llm_called_once(self, server):
+        srv, mock_llm = server
+        self._create_npc(srv, "Captain Vira")
+        srv.call_tool("react_to_event", {
+            "character_name": "Captain Vira",
+            "event_type": "ally_death",
+            "event_description": "Her trusted second-in-command fell in battle.",
+        })
+        assert len(mock_llm.calls) == 1
+
+    def test_state_updated_when_update_state_true(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Sergeant Brand")
+        srv.call_tool("react_to_event", {
+            "character_name": "Sergeant Brand",
+            "event_type": "ally_death",
+            "event_description": "His captain was killed.",
+            "update_state": True,
+        })
+        result = srv.call_tool("get_emotional_state", {"character_name": "Sergeant Brand"})
+        assert result.success
+        assert result.data["emotion"] == "grieving"
+        assert result.data["intensity"] == 4
+
+    def test_state_not_updated_when_false(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Stoic Guard")
+        srv.call_tool("react_to_event", {
+            "character_name": "Stoic Guard",
+            "event_type": "revelation",
+            "event_description": "Learned the mayor is corrupt.",
+            "update_state": False,
+        })
+        result = srv.call_tool("get_emotional_state", {"character_name": "Stoic Guard"})
+        assert result.data["emotion"] == ""  # Not updated
+
+    def test_no_llm_returns_error(self, tmp_path: Path):
+        import gm_agent.mcp.character_runner as cr_module
+        original_dir = cr_module.CAMPAIGNS_DIR
+        cr_module.CAMPAIGNS_DIR = tmp_path
+        server = CharacterRunnerServer("no-llm-react", llm=None)
+        server.call_tool("create_character", {"name": "Testee", "character_type": "npc"})
+        result = server.call_tool("react_to_event", {
+            "character_name": "Testee",
+            "event_type": "betrayal",
+            "event_description": "Test event",
+        })
+        cr_module.CAMPAIGNS_DIR = original_dir
+        assert not result.success
+        assert "No LLM" in result.error
+
+    def test_reaction_included_in_response(self, server):
+        srv, _ = server
+        self._create_npc(srv, "Lady Mira")
+        result = srv.call_tool("react_to_event", {
+            "character_name": "Lady Mira",
+            "event_type": "unexpected_kindness",
+            "event_description": "A stranger helped her when she fell.",
+        })
+        assert result.success
+        assert "Lady Mira" in result.data
+        assert "Vira goes pale" in result.data or "reacts" in result.data.lower()

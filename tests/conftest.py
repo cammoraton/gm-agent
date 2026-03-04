@@ -69,6 +69,7 @@ class MockLLMBackend(LLMBackend):
         messages: list[Message],
         tools: list[ToolDef] | None = None,
         thinking: dict | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         self.calls.append((messages, tools))
         if self._call_index < len(self.responses):
@@ -81,6 +82,7 @@ class MockLLMBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
         response = self.chat(messages, tools)
         yield StreamChunk(
@@ -406,6 +408,10 @@ class MockPathfinderSearch:
                 return name
         return None
 
+    def resolve_book_names(self, query: str) -> list[str]:
+        single = self.resolve_book_name(query)
+        return [single] if single else []
+
     def list_books_with_summaries(self, book_type: str = None) -> list[dict]:
         books = [
             {
@@ -516,6 +522,9 @@ class MockPathfinderSearch:
             }
         ]
 
+    def get_creation_table(self, key: str) -> dict:
+        return {}
+
     def close(self):
         pass
 
@@ -577,9 +586,9 @@ def mock_pathfinder_search():
         with patch.object(
             MockPathfinderSearch, "__init__", lambda self, **kwargs: None
         ):
-            # Patch the PathfinderSearch class in the pf2e_rag module
+            # Patch PathfinderSearch at canonical location (systems/pf2e/servers/)
             with patch(
-                "gm_agent.mcp.pf2e_rag.PathfinderSearch",
+                "gm_agent.systems.pf2e.servers.pf2e_rag.PathfinderSearch",
                 return_value=mock,
             ):
                 yield mock

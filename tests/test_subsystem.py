@@ -121,7 +121,7 @@ class TestSubsystemServer:
     @pytest.fixture
     def server(self, tmp_path):
         from unittest.mock import patch
-        with patch("gm_agent.mcp.subsystem.CAMPAIGNS_DIR", tmp_path):
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
             yield SubsystemServer("test-campaign")
 
     def test_list_tools(self, server):
@@ -132,7 +132,10 @@ class TestSubsystemServer:
         assert "get_subsystem_state" in tool_names
         assert "end_subsystem" in tool_names
         assert "list_subsystems" in tool_names
-        assert len(tools) == 5
+        assert "attempt_disable" in tool_names
+        assert "trigger_haunt" in tool_names
+        assert "reset_haunt" in tool_names
+        assert len(tools) == 8
 
     # --- VP subsystem tests ---
 
@@ -590,7 +593,7 @@ class TestSubsystemStateValidation:
     @pytest.fixture
     def server(self, tmp_path):
         from unittest.mock import patch
-        with patch("gm_agent.mcp.subsystem.CAMPAIGNS_DIR", tmp_path):
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
             yield SubsystemServer("test-campaign")
 
     def _start(self, server, type_="vp", name="Test", config=None):
@@ -691,7 +694,7 @@ class TestSubsystemAutoHazardRoutine:
     @pytest.fixture
     def server(self, tmp_path):
         from unittest.mock import patch
-        with patch("gm_agent.mcp.subsystem.CAMPAIGNS_DIR", tmp_path):
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
             yield SubsystemServer("test-campaign")
 
     def _start_hazard(self, server, config):
@@ -782,7 +785,7 @@ class TestExplorationSubsystem:
     @pytest.fixture
     def server(self, tmp_path):
         from unittest.mock import patch
-        with patch("gm_agent.mcp.subsystem.CAMPAIGNS_DIR", tmp_path):
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
             yield SubsystemServer("test-campaign")
 
     def _start_exploration(self, server, config=None):
@@ -889,6 +892,789 @@ class TestExplorationSubsystem:
         assert "Activities" in result.data
         assert "Marching Order" in result.data
         assert "Valeros > Ezren" in result.data
+
+
+class TestHauntMechanics:
+    """Tests for haunt subsystem type and new disable/trigger/reset actions."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    # ---- helpers ----
+
+    def _start_haunt(self, server, name="Bloody Handprint", successes_needed=2):
+        result = server.call_tool("start_subsystem", {
+            "type": "haunt",
+            "name": name,
+            "config": json.dumps({
+                "hp": 30,
+                "trigger_condition": "When a living creature enters the room",
+                "anchor": "The bloodstained mirror",
+                "reset_interval": "1 day",
+                "spiritual_immunity": True,
+                "disable_conditions": [
+                    {"skill": "Religion", "dc": 20, "successes_needed": successes_needed},
+                    {"skill": "Occultism", "dc": 18, "successes_needed": 1},
+                ],
+            }),
+        })
+        assert result.success, result.error
+        import re
+        match = re.search(r"ID:\s*(\w+)", result.data)
+        return match.group(1)
+
+    # ---- spiritual immunity ----
+
+    def test_haunt_spiritual_immunity(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "damage_hazard",
+            "args": json.dumps({"amount": 15}),
+        })
+        assert result.success
+        assert "immune to physical damage" in result.data.lower()
+
+    def test_haunt_spiritual_immunity_via_shortcut(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("trigger_haunt", {"subsystem_id": sid})
+        assert result.success  # trigger_haunt should work fine
+
+    # ---- attempt_disable ----
+
+    def test_attempt_disable_manual_roll_success(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "roll_total": 22}),
+        })
+        assert result.success
+        assert "Success" in result.data or "Progress" in result.data
+
+    def test_attempt_disable_manual_roll_failure(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "roll_total": 10}),
+        })
+        assert result.success
+        assert "Failure" in result.data or "No progress" in result.data
+
+    def test_attempt_disable_auto_roll(self, server):
+        """modifier provided — verifies a d20 is rolled and degree applied."""
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "modifier": 10}),
+        })
+        assert result.success
+        # Should contain roll breakdown
+        assert "d20(" in result.data
+
+    def test_attempt_disable_critical_success(self, server):
+        """CS (beat DC by 10+) instantly completes condition."""
+        sid = self._start_haunt(server)
+        # DC 20, roll 30 = +10 over → critical success
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "roll_total": 30}),
+        })
+        assert result.success
+        assert "instantly completed" in result.data
+
+    def test_attempt_disable_critical_failure_warns_trigger(self, server):
+        """CF on a haunt warns about trigger."""
+        sid = self._start_haunt(server)
+        # DC 20, roll 8 = CF (more than 9 below)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "roll_total": 8}),
+        })
+        assert result.success
+        assert "triggers" in result.data.lower()
+
+    def test_attempt_disable_all_conditions_met(self, server):
+        """When all conditions are complete, haunt is disabled."""
+        # Use 1 success needed for quick test
+        sid = self._start_haunt(server, successes_needed=1)
+        # Complete condition 0
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion", "roll_total": 30}),
+        })
+        # Complete condition 1 — should finish the haunt
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 1, "skill": "Occultism", "roll_total": 30}),
+        })
+        assert result.success
+        assert "disabled" in result.data.lower()
+
+    def test_attempt_disable_no_params_fails(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 0, "skill": "Religion"}),
+        })
+        assert result.success  # action succeeds but notification warns about missing params
+        assert "Provide either" in result.data
+
+    def test_attempt_disable_invalid_index(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 99, "skill": "Religion", "roll_total": 25}),
+        })
+        assert result.success
+        assert "Invalid condition_index" in result.data
+
+    # ---- shortcut tools: attempt_disable, trigger_haunt, reset_haunt ----
+
+    def test_attempt_disable_shortcut_tool(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("attempt_disable", {
+            "subsystem_id": sid,
+            "condition_index": 0,
+            "skill": "Religion",
+            "roll_total": 25,
+        })
+        assert result.success
+
+    def test_trigger_haunt(self, server):
+        sid = self._start_haunt(server)
+        result = server.call_tool("trigger_haunt", {"subsystem_id": sid})
+        assert result.success
+        assert "triggered" in result.data.lower()
+
+    def test_trigger_haunt_on_non_haunt_fails(self, server):
+        result_start = server.call_tool("start_subsystem", {
+            "type": "hazard", "name": "A Trap",
+            "config": json.dumps({"hp": 30}),
+        })
+        import re
+        match = re.search(r"ID:\s*(\w+)", result_start.data)
+        sid = match.group(1)
+        result = server.call_tool("trigger_haunt", {"subsystem_id": sid})
+        assert not result.success
+        assert "only valid for haunt" in result.error
+
+    def test_reset_haunt(self, server):
+        sid = self._start_haunt(server)
+        # Trigger it first
+        server.call_tool("trigger_haunt", {"subsystem_id": sid})
+        # Make one success
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_disable",
+            "args": json.dumps({"condition_index": 1, "skill": "Occultism", "roll_total": 30}),
+        })
+        # Now reset
+        result = server.call_tool("reset_haunt", {"subsystem_id": sid})
+        assert result.success
+        assert "reset" in result.data.lower()
+        # Verify state is cleared
+        state = server.call_tool("get_subsystem_state", {"subsystem_id": sid})
+        assert "Currently Triggered" not in state.data
+
+    def test_reset_haunt_never_interval(self, server):
+        result_start = server.call_tool("start_subsystem", {
+            "type": "haunt", "name": "Permanent Haunt",
+            "config": json.dumps({
+                "trigger_condition": "Always active",
+                "reset_interval": "never",
+                "disable_conditions": [{"skill": "Religion", "dc": 25, "successes_needed": 1}],
+            }),
+        })
+        import re
+        match = re.search(r"ID:\s*(\w+)", result_start.data)
+        sid = match.group(1)
+        result = server.call_tool("reset_haunt", {"subsystem_id": sid})
+        assert result.success  # action returns as success, but content warns
+        assert "never" in result.data.lower()
+
+    # ---- state display ----
+
+    def test_haunt_state_shows_fields(self, server):
+        sid = self._start_haunt(server)
+        state = server.call_tool("get_subsystem_state", {"subsystem_id": sid})
+        assert state.success
+        data = state.data
+        assert "Trigger" in data
+        assert "Anchor" in data
+        assert "Spiritual Immunity" in data
+        assert "Disable Conditions" in data
+
+    def test_attempt_disable_on_hazard_also_works(self, server):
+        """attempt_disable should work for regular hazards too."""
+        result_start = server.call_tool("start_subsystem", {
+            "type": "hazard", "name": "Dart Trap",
+            "config": json.dumps({
+                "hp": 40, "hardness": 5,
+                "disable_conditions": [{"skill": "Thievery", "dc": 22, "successes_needed": 1}],
+            }),
+        })
+        import re
+        match = re.search(r"ID:\s*(\w+)", result_start.data)
+        sid = match.group(1)
+        result = server.call_tool("attempt_disable", {
+            "subsystem_id": sid,
+            "condition_index": 0,
+            "skill": "Thievery",
+            "roll_total": 25,
+        })
+        assert result.success
+
+
+# ---------------------------------------------------------------------------
+# New resolution classes (Part 1 plan implementation)
+# ---------------------------------------------------------------------------
+
+class TestInfluenceResolution:
+    """Tests for influence subsystem dice-driven VP resolution."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    def _start_influence(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "influence",
+            "name": "Influence Lord Gyr",
+            "config": json.dumps({
+                "npcs": {
+                    "Lord Gyr": {
+                        "approach_dcs": {"Diplomacy": 20, "Intimidation": 24},
+                        "weaknesses": ["flattery"],
+                        "resistances": ["threats"],
+                        "min_vp": 0,
+                        "max_vp": 5,
+                    }
+                }
+            }),
+        })
+        assert result.success, result.error
+        import re
+        return re.search(r"ID:\s*(\w+)", result.data).group(1)
+
+    def test_success_adds_one_vp(self, server):
+        sid = self._start_influence(server)
+        # DC 20, roll 21 → success → +1 VP
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({"npc": "Lord Gyr", "approach": "Diplomacy", "roll_total": 21}),
+        })
+        assert result.success
+        assert "1/5" in result.data
+
+    def test_critical_success_adds_two_vp(self, server):
+        sid = self._start_influence(server)
+        # DC 20, roll 30 → CS → +2 VP
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({"npc": "Lord Gyr", "approach": "Diplomacy", "roll_total": 30}),
+        })
+        assert result.success
+        assert "2/5" in result.data
+
+    def test_critical_failure_delta_is_negative_one(self, server):
+        sid = self._start_influence(server)
+        # Get to VP=2 first
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({"npc": "Lord Gyr", "approach": "Diplomacy", "roll_total": 30}),
+        })
+        # DC 20, roll 5 → CF (-15) → -1 VP; from 2 → 1
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({"npc": "Lord Gyr", "approach": "Diplomacy", "roll_total": 5}),
+        })
+        assert result.success
+        assert "-1 VP" in result.data or "1/5" in result.data
+
+    def test_weakness_lowers_dc(self, server):
+        sid = self._start_influence(server)
+        # Flattery weakness reduces DC from 20 to 18; roll 19 → success at DC 18
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({
+                "npc": "Lord Gyr",
+                "approach": "Diplomacy",
+                "roll_total": 19,
+                "situation": "using lots of flattery and praise",
+            }),
+        })
+        assert result.success
+        # DC reduced notification or +1 VP
+        assert "flattery" in result.data.lower() or "+1 VP" in result.data or "1/5" in result.data
+
+    def test_all_targets_max_auto_completes(self, server):
+        sid = self._start_influence(server)
+        # CS every round: +2 VP each → 3 rounds hits max_vp=5 (2+2+1)
+        for _ in range(3):
+            server.call_tool("subsystem_action", {
+                "subsystem_id": sid,
+                "action": "attempt_influence",
+                "args": json.dumps({"npc": "Lord Gyr", "approach": "Diplomacy", "roll_total": 30}),
+            })
+        state = server.call_tool("get_subsystem_state", {"subsystem_id": sid})
+        assert "completed" in state.data.lower()
+
+    def test_wrong_type_error(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "vp", "name": "Wrong", "config": "{}",
+        })
+        import re
+        sid = re.search(r"ID:\s*(\w+)", result.data).group(1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_influence",
+            "args": json.dumps({"npc": "X", "approach": "Diplomacy", "roll_total": 20}),
+        })
+        assert not result.success
+        assert "only valid for influence" in result.error
+
+
+class TestChaseResolution:
+    """Tests for chase subsystem obstacle resolution."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    def _start_chase(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "chase",
+            "name": "Roof Chase",
+            "config": json.dumps({
+                "participants": ["Party", "Thief"],
+                "chase_length": 10,
+                "obstacles": [
+                    {
+                        "name": "Crowded Market",
+                        "skill": "Acrobatics",
+                        "dc": 18,
+                        "alternative_skill": "Athletics",
+                        "alternative_dc": 20,
+                        "success_advances": 1,
+                        "cf_retreats": 1,
+                    },
+                    {
+                        "name": "Narrow Ledge",
+                        "skill": "Athletics",
+                        "dc": 16,
+                        "success_advances": 2,
+                        "cf_retreats": 1,
+                    },
+                ],
+            }),
+        })
+        assert result.success, result.error
+        import re
+        return re.search(r"ID:\s*(\w+)", result.data).group(1)
+
+    def test_success_advances_position(self, server):
+        sid = self._start_chase(server)
+        # DC 18, roll 19 → success → +1
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 0, "skill": "Acrobatics", "roll_total": 19}),
+        })
+        assert result.success
+        assert "Party" in result.data
+        assert "0 → 1" in result.data
+
+    def test_critical_success_advances_double(self, server):
+        sid = self._start_chase(server)
+        # DC 18, roll 28 → CS (+10 over) → success_advances*2 = 2
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 0, "skill": "Acrobatics", "roll_total": 28}),
+        })
+        assert result.success
+        assert "0 → 2" in result.data
+
+    def test_critical_failure_retreats(self, server):
+        sid = self._start_chase(server)
+        # Advance to pos 2 first
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 0, "skill": "Acrobatics", "roll_total": 28}),
+        })
+        # CF: DC 18, roll 5 → retreat 1
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 0, "skill": "Acrobatics", "roll_total": 5}),
+        })
+        assert result.success
+        assert "2 → 1" in result.data
+
+    def test_alternative_skill_uses_alt_dc(self, server):
+        sid = self._start_chase(server)
+        # Athletics is alt skill with alt_dc=20; roll 20 → success at DC 20
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 0, "skill": "Athletics", "roll_total": 20}),
+        })
+        assert result.success
+        # Success (not CS since 20-20=0, success); the DC used should be 20
+        assert "Crowded Market" in result.data
+
+    def test_oob_index_error(self, server):
+        sid = self._start_chase(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "Party", "obstacle_index": 99, "skill": "Acrobatics", "roll_total": 20}),
+        })
+        assert result.success
+        assert "Invalid obstacle_index" in result.data
+
+    def test_wrong_type_error(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "vp", "name": "Wrong", "config": "{}",
+        })
+        import re
+        sid = re.search(r"ID:\s*(\w+)", result.data).group(1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "attempt_obstacle",
+            "args": json.dumps({"participant": "X", "obstacle_index": 0, "skill": "A", "roll_total": 20}),
+        })
+        assert not result.success
+        assert "only valid for chase" in result.error
+
+
+class TestResearchResolution:
+    """Tests for research subsystem source-based VP resolution."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    def _start_research(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "research",
+            "name": "Ancient Library",
+            "config": json.dumps({
+                "vp_target": 10,
+                "sources": [
+                    {
+                        "name": "Old Tome",
+                        "skill": "Arcana",
+                        "dc": 20,
+                        "per_success": 2,
+                        "max_contribution": 6,
+                        "discovery_note": "The tome reveals a hidden vault location!",
+                    },
+                    {
+                        "name": "Star Charts",
+                        "skill": "Occultism",
+                        "dc": 18,
+                        "per_success": 1,
+                        "max_contribution": 4,
+                    },
+                ],
+            }),
+        })
+        assert result.success, result.error
+        import re
+        return re.search(r"ID:\s*(\w+)", result.data).group(1)
+
+    def test_success_adds_vp(self, server):
+        sid = self._start_research(server)
+        # DC 20, roll 21 → success → +2 VP
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 21}),
+        })
+        assert result.success
+        assert "+2 VP" in result.data
+
+    def test_critical_success_triggers_discovery_note(self, server):
+        sid = self._start_research(server)
+        # DC 20, roll 30 → CS → +4 VP + discovery note
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 30}),
+        })
+        assert result.success
+        assert "Discovery" in result.data
+        assert "hidden vault" in result.data
+
+    def test_source_cap_stops_vp_gain(self, server):
+        sid = self._start_research(server)
+        # Fill source 0 to max_contribution=6 via 3 CS (4 VP each time, capped)
+        # Roll CS 3 times: +4 each = 12, but capped at 6
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 30}),
+        })
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 30}),
+        })
+        # Third call — should be capped
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 30}),
+        })
+        assert result.success
+        assert "max contribution" in result.data
+
+    def test_vp_target_auto_completes(self, server):
+        sid = self._start_research(server)
+        # source 0: per_success=2, max_contribution=6. CS=4 VP each.
+        #   1st CS: contribution 0→4, VP 0→4
+        #   2nd CS: contribution 4→6 (capped), VP 4→6
+        # source 1: per_success=1, max_contribution=4. success=1 VP.
+        #   need 4 more VP from source 1 → 4 successes
+        for _ in range(2):
+            server.call_tool("subsystem_action", {
+                "subsystem_id": sid,
+                "action": "research_check",
+                "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 30}),
+            })
+        # VP now at 6; need 4 more
+        for _ in range(3):
+            server.call_tool("subsystem_action", {
+                "subsystem_id": sid,
+                "action": "research_check",
+                "args": json.dumps({"source_index": 1, "skill": "Occultism", "roll_total": 25}),
+            })
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 1, "skill": "Occultism", "roll_total": 25}),
+        })
+        assert result.success
+        assert "Research complete" in result.data or "completed" in result.data.lower()
+
+    def test_wrong_type_error(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "vp", "name": "Wrong", "config": "{}",
+        })
+        import re
+        sid = re.search(r"ID:\s*(\w+)", result.data).group(1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "research_check",
+            "args": json.dumps({"source_index": 0, "skill": "Arcana", "roll_total": 20}),
+        })
+        assert not result.success
+        assert "only valid for research" in result.error
+
+
+class TestInfiltrationEdge:
+    """Tests for infiltration edge point earn/spend mechanics."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    def _start_infiltration(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "infiltration",
+            "name": "Nobleman's Estate",
+            "config": json.dumps({
+                "detection_threshold": 15,
+                "edge_benefits": [
+                    {"cost": 1, "description": "Bypass one guard check"},
+                    {"cost": 3, "description": "Stolen uniform — avoid detection"},
+                ],
+            }),
+        })
+        assert result.success, result.error
+        import re
+        return re.search(r"ID:\s*(\w+)", result.data).group(1)
+
+    def test_earn_edge_increments(self, server):
+        sid = self._start_infiltration(server)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "earn_edge",
+            "args": json.dumps({"amount": 2, "action": "Bribed a guard"}),
+        })
+        assert result.success
+        assert "Edge points: 2" in result.data
+
+    def test_spend_edge_decrements(self, server):
+        sid = self._start_infiltration(server)
+        # Earn first
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "earn_edge",
+            "args": json.dumps({"amount": 3}),
+        })
+        # Spend benefit index 0 (cost=1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "spend_edge",
+            "args": json.dumps({"benefit_index": 0}),
+        })
+        assert result.success
+        assert "Edge points remaining: 2" in result.data
+
+    def test_spend_edge_validates_cost(self, server):
+        sid = self._start_infiltration(server)
+        # Earn only 2, try benefit_index=1 which costs 3
+        server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "earn_edge",
+            "args": json.dumps({"amount": 2}),
+        })
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "spend_edge",
+            "args": json.dumps({"benefit_index": 1}),
+        })
+        assert result.success
+        assert "Insufficient edge" in result.data
+
+    def test_earn_edge_wrong_type_error(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "vp", "name": "Wrong", "config": "{}",
+        })
+        import re
+        sid = re.search(r"ID:\s*(\w+)", result.data).group(1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "earn_edge",
+            "args": json.dumps({"amount": 1}),
+        })
+        assert not result.success
+        assert "only valid for infiltration" in result.error
+
+
+class TestHazardCombat:
+    """Tests for hazard attack roll and saving throw resolution."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        from unittest.mock import patch
+        with patch("gm_agent.systems.pf2e.servers.subsystem.CAMPAIGNS_DIR", tmp_path):
+            yield SubsystemServer("test-campaign")
+
+    def _start_hazard(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "hazard",
+            "name": "Scything Blade Trap",
+            "config": json.dumps({
+                "hp": 60,
+                "hardness": 10,
+                "routine_actions": ["Swings blade at nearest"],
+                "disable_conditions": [{"skill": "Thievery", "dc": 22}],
+            }),
+        })
+        assert result.success, result.error
+        import re
+        return re.search(r"ID:\s*(\w+)", result.data).group(1)
+
+    def test_hazard_attack_hit(self, server):
+        sid = self._start_hazard(server)
+        # attack_bonus=12, target_ac=18, roll_total=20 → total=20 ≥ 18 → hit
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_attack",
+            "args": json.dumps({"attack_bonus": 12, "target_ac": 18, "roll_total": 20}),
+        })
+        assert result.success
+        assert "Hit" in result.data
+        assert "Apply damage" in result.data
+
+    def test_hazard_attack_miss(self, server):
+        sid = self._start_hazard(server)
+        # roll_total=10 < target_ac=18 → miss (not CF since 18-10=8 < 10)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_attack",
+            "args": json.dumps({"attack_bonus": 0, "target_ac": 18, "roll_total": 10}),
+        })
+        assert result.success
+        assert "Miss" in result.data
+        assert "Apply damage" not in result.data
+
+    def test_hazard_attack_critical_hit(self, server):
+        sid = self._start_hazard(server)
+        # roll_total=28 ≥ target_ac=18+10=28 → critical hit
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_attack",
+            "args": json.dumps({"attack_bonus": 0, "target_ac": 18, "roll_total": 28}),
+        })
+        assert result.success
+        assert "Critical Hit" in result.data
+
+    def test_hazard_save_success(self, server):
+        sid = self._start_hazard(server)
+        # save_dc=20, save_modifier=5, roll_total=22 → 22 ≥ 20 → success
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_save",
+            "args": json.dumps({"save_dc": 20, "save_type": "Reflex", "save_modifier": 5, "roll_total": 22}),
+        })
+        assert result.success
+        assert "Reflex" in result.data
+        assert "Success" in result.data
+
+    def test_hazard_save_critical_failure(self, server):
+        sid = self._start_hazard(server)
+        # save_dc=20, roll_total=5 → 5-20=-15 < -9 → critical failure
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_save",
+            "args": json.dumps({"save_dc": 20, "save_type": "Fortitude", "save_modifier": 0, "roll_total": 5}),
+        })
+        assert result.success
+        assert "Critical Failure" in result.data
+
+    def test_hazard_combat_wrong_type_error(self, server):
+        result = server.call_tool("start_subsystem", {
+            "type": "vp", "name": "Wrong", "config": "{}",
+        })
+        import re
+        sid = re.search(r"ID:\s*(\w+)", result.data).group(1)
+        result = server.call_tool("subsystem_action", {
+            "subsystem_id": sid,
+            "action": "hazard_attack",
+            "args": json.dumps({"attack_bonus": 5, "target_ac": 15, "roll_total": 18}),
+        })
+        assert not result.success
+        assert "only valid for hazard" in result.error
 
 
 if __name__ == "__main__":

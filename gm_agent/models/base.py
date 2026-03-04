@@ -59,6 +59,7 @@ class LLMBackend(ABC):
         messages: list[Message],
         tools: list[ToolDef] | None = None,
         thinking: dict | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         """Send messages and get a response, optionally with tool definitions.
 
@@ -69,6 +70,9 @@ class LLMBackend(ABC):
                       the backend, enables reasoning capture. Example:
                       {"type": "enabled", "budget_tokens": 4096}.
                       Backends that don't support thinking ignore this.
+            temperature: Sampling temperature (0.0-2.0). Higher values
+                         produce more creative/varied output. None uses
+                         the provider's default (typically ~0.7-1.0).
         """
         pass
 
@@ -76,6 +80,7 @@ class LLMBackend(ABC):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
         """Send messages and get a streaming response.
 
@@ -85,6 +90,7 @@ class LLMBackend(ABC):
         Args:
             messages: Conversation messages
             tools: Optional tool definitions
+            temperature: Sampling temperature (0.0-2.0). None = provider default.
 
         Yields:
             StreamChunk objects with incremental content
@@ -94,7 +100,7 @@ class LLMBackend(ABC):
             and handle tool execution before continuing.
         """
         # Default: non-streaming fallback
-        response = self.chat(messages, tools)
+        response = self.chat(messages, tools, temperature=temperature)
         yield StreamChunk(
             delta=response.text,
             tool_calls=response.tool_calls,

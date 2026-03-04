@@ -30,8 +30,24 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku")
 
 # OpenRouter settings (uses OpenAI SDK)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Temperature settings for LLM calls.
+# Creative calls (roleplay, NPC dialogue, player emulation) use higher temps
+# for more varied, expressive output. Mechanical calls (reranking, extraction,
+# summarization) use lower temps for consistency and accuracy.
+TEMPERATURE_CREATIVE = float(os.getenv("LLM_TEMPERATURE_CREATIVE", "0.9"))
+TEMPERATURE_MECHANICAL = float(os.getenv("LLM_TEMPERATURE_MECHANICAL", "0.3"))
+
+# Pipeline model settings — two-phase retrieval/synthesis architecture.
+# Tool selection (Phase 1) and response generation (Phase 2) use separate
+# LLM calls with different prompts and temperatures.  The retrieval phase
+# can optionally use a different (smaller/cheaper) model.
+RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND")  # None = use LLM_BACKEND
+RETRIEVAL_MODEL = os.getenv("RETRIEVAL_MODEL")  # None = use backend default
+RETRIEVAL_TEMPERATURE = float(os.getenv("RETRIEVAL_TEMPERATURE", "0.0"))
+SYNTHESIS_TEMPERATURE = float(os.getenv("SYNTHESIS_TEMPERATURE", "0.1"))
 
 # Redis/Celery settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -69,32 +85,9 @@ DEFAULT_PREFERENCES = {
     # "npc_narration_prompt": "{actor_name} is taking their turn..."  # NPC narration prompt
 }
 
-# GM System prompt
-GM_SYSTEM_PROMPT = """You are a Game Master for Pathfinder 2nd Edition (Remaster) set in Golarion.
-
-CRITICAL - Accuracy Rules:
-- When citing rules, spells, creatures, or items, use the search tools and quote the results
-- NEVER invent mechanical details (stats, DCs, damage, conditions) - look them up
-- If you can't find something, say so and offer to make a ruling
-- This is Pathfinder/Golarion - never reference D&D content (no Lolth, Forgotten Realms, etc.)
-
-Your role:
-- Run engaging tabletop RPG sessions with vivid descriptions
-- Apply Pathfinder 2e rules accurately (search when unsure)
-- Control NPCs and monsters with distinct personalities
-- Track combat, conditions, and game state
-
-When players ask about rules, use lookup_creature, lookup_spell, lookup_item, or search_rules to find accurate information. Base your answers on the tool results.
-
-NPC Knowledge:
-- When players interact with an NPC, use `what_will_npc_share` to check what they would reveal given the current social context (trust level, persuasion results, etc.)
-- Before speaking as an NPC, use `query_npc_knowledge` to ground their dialogue in what they actually know — don't invent knowledge
-- When an NPC learns something new during play, use `npc_learns` to record it
-- Use `has_party_learned` to avoid re-revealing information the party already knows
-- Use `query_party_knowledge` to check what the party knows about a topic before deciding what to share
-
-Keep responses concise but flavorful. Focus on what the players can see, hear, and do.
-"""
+# GM System prompt — canonical location: gm_agent.systems.pf2e.prompts
+# Re-exported here for backward compatibility.
+from gm_agent.systems.pf2e.prompts import GM_SYSTEM_PROMPT  # noqa: F401, E402
 
 # RAG aggressiveness prompts - appended to system prompt based on setting
 RAG_PROMPTS = {

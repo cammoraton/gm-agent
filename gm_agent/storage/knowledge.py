@@ -470,6 +470,60 @@ class KnowledgeStore:
         conn.commit()
         return removed
 
+    def update_knowledge(
+        self,
+        knowledge_id: int,
+        importance: int | None = None,
+        sharing_condition: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+    ) -> bool:
+        """Update fields on a knowledge entry.
+
+        Args:
+            knowledge_id: ID of the knowledge entry to update
+            importance: New importance value (1-10), or None to leave unchanged
+            sharing_condition: New sharing condition, or None to leave unchanged
+            add_tags: Tags to add (merged with existing)
+            remove_tags: Tags to remove
+
+        Returns:
+            True if updated, False if not found
+        """
+        entry = self.get_by_id(knowledge_id)
+        if not entry:
+            return False
+
+        conn = self._get_conn()
+        updates: dict[str, Any] = {}
+
+        if importance is not None:
+            updates["importance"] = max(1, min(10, importance))
+
+        if sharing_condition is not None:
+            updates["sharing_condition"] = sharing_condition
+
+        if add_tags or remove_tags:
+            current_tags = set(entry.tags)
+            if add_tags:
+                current_tags.update(add_tags)
+            if remove_tags:
+                current_tags -= set(remove_tags)
+            updates["tags"] = ",".join(sorted(current_tags))
+
+        if not updates:
+            return True  # Nothing to update, no-op
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [knowledge_id]
+
+        cursor = conn.execute(
+            f"UPDATE knowledge SET {set_clause} WHERE id = ?",
+            values,
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
     def delete(self, knowledge_id: int) -> bool:
         """Delete a knowledge entry.
 

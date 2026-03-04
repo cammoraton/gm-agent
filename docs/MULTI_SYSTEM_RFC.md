@@ -1,8 +1,10 @@
 # Multi-Game-System Architecture RFC
 
+> **Implementation Status (Feb 2025):** Phases 0-2 are **COMPLETE**. The GM Agent now supports 5 game systems (PF2e, Microscope, Ex Novo, Delve, Ex Umbra) with 13 MCP servers, 152 tools, and 1755 tests. See status annotations inline below.
+
 ## Context
 
-The GM Agent currently supports Pathfinder 2e exclusively. The conversation driving this RFC explored supporting additional game systems in two categories:
+The GM Agent ~~currently supports Pathfinder 2e exclusively~~ now supports multiple game systems. The conversation driving this RFC explored supporting additional game systems in two categories:
 
 1. **Full RPGs** — played through the agent as GM: Blades in the Dark, Ironsworn/Starforged, Heart/Spire, *Without Number, Legacy
 2. **Procedural generation games** — output fiction/setting that feeds into RPGs: Microscope, Ex Novo, Ex Umbra, Delve, How to Host a Dungeon, The Quiet Year
@@ -385,46 +387,54 @@ Focus: {current_focus}
 
 ## F. Migration Path
 
-### Phase 0: Groundwork (no behavioral change)
+### Phase 0: Groundwork (no behavioral change) -- COMPLETE
 
-1. **Add `game_systems` and `primary_system` to Campaign model** with defaults `["pf2e"]` / `"pf2e"` — backward compatible
-2. **Define `GameSystem` ABC** in `gm_agent/systems/__init__.py`
-3. **Move PF2e-specific code into `gm_agent/systems/pf2e/`** — reexport from original locations for backward compat
-4. **Create `PF2eSystem(GameSystem)`** that returns existing servers/prompt/stores
-5. **Parameterize `GM_SYSTEM_PROMPT`** — load from `GameSystem.system_prompt()` instead of hardcoded constant
+1. ~~**Add `game_systems` and `primary_system` to Campaign model**~~ DONE
+2. ~~**Define `GameSystem` ABC**~~ DONE — `gm_agent/systems/__init__.py`
+3. ~~**Move PF2e-specific code into `gm_agent/systems/pf2e/`**~~ DONE
+4. ~~**Create `PF2eSystem(GameSystem)`**~~ DONE — returns servers/prompt/stores
+5. ~~**Parameterize `GM_SYSTEM_PROMPT`**~~ DONE — loaded from `GameSystem.system_prompt()`
 
-All existing tests pass unchanged. The PF2e path is the only path.
+Additionally completed: `SystemToolPlugin` protocol for CampaignStateServer plugin injection (Phase 3 WS1). PF2e-specific tools (travel time, hazard detection, AP progress, treasure) extracted to `PF2eCampaignToolPlugin`.
 
-### Phase 1: Fiction Tree + Microscope
+### Phase 1: Fiction Tree + Microscope -- COMPLETE
 
-1. **Implement `FictionTreeStore`** (SQLite-backed, under `gm_agent/storage/`)
-2. **Implement `MicroscopeSystem`** with `TimelineServer`
-3. **Add `browse_fiction_tree` tool** to a shared server (available to all systems)
-4. **Test**: Run a Microscope session through the agent, verify fiction tree populates correctly
+1. ~~**Implement `FictionTreeStore`**~~ DONE — SQLite-backed, `gm_agent/storage/fiction_tree.py`
+2. ~~**Implement `MicroscopeSystem`**~~ DONE — `MicroscopeSessionServer` with 24 tools (setup, palette, focus, periods, events, scenes, legacies, seeds, oracles, mini-games, virtual players)
+3. ~~**Add `browse_fiction_tree` tool**~~ DONE — `FictionTreeServer` in `gm_agent/mcp/fiction_tree.py`
+4. ~~**Test**~~ DONE — comprehensive test coverage
 
-This is the first non-PF2e system and validates the plugin architecture. Microscope is ideal first because it's simple (no dice, no stats, just narrative structure) and the fiction tree it produces is the foundation for everything else.
+Additionally completed beyond RFC scope: seed libraries, oracle tables, mini-games (chronicle, echo, union), virtual player support with personality profiles and decision memory.
 
-### Phase 2: Ex Novo + Cross-System Composition
+### Phase 2: Ex Novo + Cross-System Composition -- COMPLETE
 
-1. **Implement `ExNovoSystem`** with `SettlementServer`
-2. **Implement grounding step**: fiction tree nodes → PF2e locations + NPCs + encounters
-3. **Test**: Run Ex Novo → verify settlement feeds into PF2e prep pipeline
+1. ~~**Implement `ExNovoSystem`**~~ DONE — `SettlementServer` with 13 tools
+2. ~~**Implement grounding step**~~ DONE — `GroundingServer` (6 tools) with LLM reranking + `fiction_extraction.py` (pure data transforms, no LLM)
+3. ~~**Test**~~ DONE — comprehensive test coverage
 
-This validates cross-system composition. The "generation game output → RPG input" pipeline is the key architectural proof point.
+Additionally completed beyond RFC scope:
+- **Delve system** — `DelveServer` with 13 tools (underground kingdom generation)
+- **Ex Umbra system** — `DungeonServer` with 13 tools (dungeon generation)
+- **Fiction knowledge extraction** — `extract_fiction_knowledge` converts fiction tree nodes from any system into KnowledgeStore entries (microscope → eras/palette/events, settlement → factions/districts, dungeon → rooms/details)
+- **Virtual players** on all 4 generation game servers with personality profiles and decision memory
 
-### Phase 3: Table-Driven Systems
+### Phase 3: Table-Driven Systems -- PARTIALLY COMPLETE
 
-1. **Implement a shared `OracleTableServer`** pattern — loads tables from JSON/YAML per system
-2. **Implement one of**: How to Host a Dungeon, Delve, or Ex Umbra (all are table + procedure driven)
-3. **Generalize the SubsystemStore** if needed for system-specific state shapes
+1. **Shared infrastructure** — DONE: `shared/cards.py` (generic card deck), `shared/virtual_player_engine.py`, `shared/personality.py` (50 traits, 20 archetypes), `shared/archetypes.py`
+2. ~~**Implement Delve and Ex Umbra**~~ DONE — both implemented with table-driven procedures
+3. **Generalize SubsystemStore** — DONE: works for PF2e subsystems (VP, influence, research, chase, infiltration, hazard, exploration)
 
-### Phase 4: Full RPG Systems
+**Remaining:** How to Host a Dungeon, The Quiet Year
+
+### Phase 4: Full RPG Systems -- NOT STARTED
 
 1. **Implement Ironsworn or Blades** — whichever has the most community interest
 2. **Validate that KnowledgeStore, FactionStore, etc. work unchanged** for a non-PF2e RPG
 3. **Test the full loop**: generation → grounding → play
 
-### Phase 5: Advanced Composition
+Note: The shared infrastructure (GameSystem ABC, FictionTreeStore, KnowledgeStore, FactionStore, LocationStore, virtual players, personality profiles) is all in place. Adding a new RPG is primarily about creating system-specific servers and prompts.
+
+### Phase 5: Advanced Composition -- NOT STARTED
 
 1. **Legacy support** — multi-generational play with fiction tree age transitions
 2. **Cross-RPG composition** — e.g., use Blades' faction game to simulate political intrigue in a PF2e campaign
@@ -460,25 +470,38 @@ Each system can define a prep pipeline. PF2e has party/NPC/subsystem/world knowl
 
 ---
 
-## Files That Would Change (Phase 0)
+## Implementation Status (Files)
 
-| File | Change |
+### Phase 0 Files -- ALL COMPLETE
+
+| File | Status |
 |---|---|
-| `gm_agent/systems/__init__.py` | NEW — GameSystem ABC, registry |
-| `gm_agent/systems/pf2e/__init__.py` | NEW — PF2eSystem wrapping existing servers |
-| `gm_agent/storage/schemas.py` | Add `game_systems`, `primary_system` to Campaign |
-| `gm_agent/config.py` | Extract GM_SYSTEM_PROMPT to PF2eSystem.system_prompt() |
-| `gm_agent/context.py` | Load system prompt from GameSystem instead of constant |
-| `gm_agent/mcp/registry.py` | Support system-provided server discovery |
-| `gm_agent/mcp/client.py` | Instantiate servers from campaign.game_systems |
+| `gm_agent/systems/__init__.py` | DONE — GameSystem ABC, @register_system, SYSTEM_REGISTRY |
+| `gm_agent/systems/pf2e/__init__.py` | DONE — PF2eSystem with servers/prompt/stores |
+| `gm_agent/systems/pf2e/campaign_tools.py` | DONE — PF2eCampaignToolPlugin (SystemToolPlugin) |
+| `gm_agent/storage/schemas.py` | DONE — game_systems, primary_system on Campaign |
+| `gm_agent/mcp/base.py` | DONE — SystemToolPlugin protocol |
+| `gm_agent/mcp/campaign_state.py` | DONE — Plugin injection, 36 core tools |
 
-## Files That Would Be New (Phase 1)
+### Phase 1-2 Files -- ALL COMPLETE
 
-| File | Purpose |
+| File | Status |
 |---|---|
-| `gm_agent/storage/fiction_tree.py` | FictionTreeStore |
-| `gm_agent/systems/microscope/__init__.py` | MicroscopeSystem |
-| `gm_agent/systems/microscope/servers.py` | TimelineServer |
-| `gm_agent/systems/microscope/prompts.py` | Facilitator prompt |
-| `tests/test_fiction_tree.py` | Fiction tree store tests |
-| `tests/test_microscope.py` | Microscope system tests |
+| `gm_agent/storage/fiction_tree.py` | DONE — FictionTreeStore (SQLite) |
+| `gm_agent/mcp/fiction_tree.py` | DONE — FictionTreeServer |
+| `gm_agent/mcp/grounding.py` | DONE — GroundingServer (6 tools, LLM reranking) |
+| `gm_agent/prep/fiction_extraction.py` | DONE — Fiction-to-knowledge extraction |
+| `gm_agent/systems/microscope/` | DONE — servers.py, prompts.py, seeds.py, oracles.py |
+| `gm_agent/systems/ex_novo/` | DONE — servers.py, prompts.py, tables.py |
+| `gm_agent/systems/delve/` | DONE — servers.py, prompts.py, tables.py |
+| `gm_agent/systems/ex_umbra/` | DONE — servers.py, prompts.py, tables.py |
+| `gm_agent/systems/shared/` | DONE — virtual_player_engine.py, personality.py, archetypes.py, cards.py |
+| `tests/test_fiction_tree.py` | DONE |
+| `tests/test_microscope.py` | DONE |
+| `tests/test_ex_novo.py` | DONE |
+| `tests/test_delve.py` | DONE |
+| `tests/test_ex_umbra.py` | DONE |
+| `tests/test_grounding.py` | DONE |
+| `tests/test_fiction_extraction.py` | DONE |
+| `tests/test_virtual_player.py` | DONE |
+| `tests/test_personality.py` | DONE |

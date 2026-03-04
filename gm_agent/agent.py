@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Iterator
 
-from .config import PARALLEL_TOOL_CALLS
+from .config import PARALLEL_TOOL_CALLS, TEMPERATURE_CREATIVE
 from .context import build_context
 from .mcp.base import ToolDef, ToolResult
 from .mcp.client import MCPClient
@@ -34,6 +34,7 @@ class GMAgent:
         self,
         campaign_id: str,
         llm: LLMBackend | None = None,
+        narrator_llm: LLMBackend | None = None,
         verbose: bool = False,
         enable_rag: bool = True,
         enable_campaign_state: bool = True,
@@ -41,6 +42,14 @@ class GMAgent:
         auto_summarize: bool = True,
         foundry_server: "FoundryVTTServer | None" = None,
     ):
+        """Initialize the GM agent.
+
+        Args:
+            llm: The main LLM backend — drives tool orchestration (retrieval).
+                 Defaults to ``get_backend()`` (LLM_BACKEND env var).
+            narrator_llm: Optional separate LLM for the narrator/synthesis phase.
+                 Defaults to the same model as ``llm``.
+        """
         self.campaign = campaign_store.get(campaign_id)
         if not self.campaign:
             raise ValueError(f"Campaign '{campaign_id}' not found")
@@ -82,6 +91,18 @@ class GMAgent:
         else:
             self._summarizer = None
 
+        # Split pipeline (always on)
+        # llm = orchestrator (tool calls), narrator_llm = synthesis (final response)
+        from .split import SplitPipeline
+
+        self._pipeline = SplitPipeline(
+            retrieval_llm=self.llm,
+            synthesis_llm=narrator_llm or self.llm,
+            mcp=self._mcp,
+            synthesis_system_prompt="",  # Built per turn from context
+            verbose=verbose,
+        )
+
     def set_foundry_server(self, foundry_server: "FoundryVTTServer | None") -> None:
         """Set or update the Foundry VTT server.
 
@@ -102,13 +123,15 @@ class GMAgent:
         """
         Process a player turn and return the GM response.
 
+        Uses the two-phase split pipeline: orchestrator gathers information
+        and executes actions, then narrator produces the final response.
+
         This handles:
         1. Building context from campaign and session
-        2. Sending to LLM with available tools
-        3. Executing any tool calls
-        4. Getting final response
-        5. Recording the turn with metadata
-        6. Updating rolling summary if needed
+        2. Running the orchestrator (tool calls at low temperature)
+        3. Running the narrator (grounded response at creative temperature)
+        4. Recording the turn with metadata
+        5. Updating rolling summary if needed
 
         Args:
             player_input: The player's input text
@@ -121,107 +144,44 @@ class GMAgent:
         """
         start_time = time.time()
 
-        # Build context messages
+        # Build context and extract system prompt
         context_messages = build_context(self.campaign, self.session)
+        system_content = next(
+            (m.content for m in context_messages if m.role == "system"), ""
+        )
+        history = [m for m in context_messages if m.role != "system"]
 
-        # Add the new player input
-        messages = context_messages + [Message(role="user", content=player_input)]
+        # Update synthesis prompt per turn (includes campaign context)
+        self._pipeline.synthesis_system_prompt = system_content
 
-        # Get available tools from all servers
-        tools = self._get_all_tools()
+        result = self._pipeline.run(
+            query=player_input,
+            conversation_history=history[-6:],
+        )
 
-        # Track tool calls for this turn
-        tool_call_records: list[ToolCallRecord] = []
-        tool_usage: dict[str, int] = {}  # Track usage counts per tool
-        tool_failures: list[str] = []  # Track failed tool calls
-
-        # Main agent loop - handle tool calls
-        max_iterations = 5  # Prevent infinite loops
-        iteration = 0
-
-        while iteration < max_iterations:
-            iteration += 1
-
-            # Get LLM response
-            response = self.llm.chat(messages, tools=tools)
-
-            # If no tool calls, we're done
-            if not response.tool_calls:
-                break
-
-            # Process tool calls
-            if self.verbose:
-                print(f"\n[Tool calls: {[tc.name for tc in response.tool_calls]}]")
-
-            # Add assistant message with tool calls
-            messages.append(
-                Message(
-                    role="assistant",
-                    content=response.text,
-                    tool_calls=response.tool_calls,
-                )
-            )
-
-            # Execute tool calls (parallel or sequential based on config)
-            if PARALLEL_TOOL_CALLS and len(response.tool_calls) > 1:
-                # Parallel execution
-                results = self._execute_tools_parallel(response.tool_calls)
-            else:
-                # Sequential execution (default)
-                results = [
-                    (tool_call, self._execute_tool(tool_call)) for tool_call in response.tool_calls
-                ]
-
-            # Process results in order
-            for tool_call, result in results:
-                if self.verbose:
-                    print(f"  {tool_call.name}({tool_call.args}) -> {result.success}")
-
-                # Track tool usage
-                tool_usage[tool_call.name] = tool_usage.get(tool_call.name, 0) + 1
-
-                # Track failures
-                if not result.success:
-                    tool_failures.append(tool_call.name)
-
-                # Record the tool call
-                tool_call_records.append(
-                    ToolCallRecord(
-                        name=tool_call.name,
-                        args=tool_call.args,
-                        result=result.to_string(),
-                    )
-                )
-
-                # Add tool result to messages
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=result.to_string(),
-                        tool_call_id=tool_call.id,
-                    )
-                )
-
-        # Get the final response text
-        final_response = response.text
-
-        # Calculate processing time
+        # Record turn with dual-model metadata
         processing_time_ms = (time.time() - start_time) * 1000
-
-        # Build metadata with timing info and tool analytics
         turn_metadata = metadata or TurnMetadata()
         turn_metadata.processing_time_ms = processing_time_ms
-        turn_metadata.tool_count = len(tool_call_records)
-        turn_metadata.tool_usage = tool_usage
-        turn_metadata.tool_failures = tool_failures
-        turn_metadata.model = self.llm.get_model_name()
 
-        # Record the turn
+        all_tool_calls: list[ToolCallRecord] = []
+        tool_usage: dict[str, int] = {}
+        for rr in result.retrieval_rounds:
+            for name, args, text in rr.tool_calls:
+                all_tool_calls.append(ToolCallRecord(name=name, args=args, result=text))
+                tool_usage[name] = tool_usage.get(name, 0) + 1
+        turn_metadata.tool_count = len(all_tool_calls)
+        turn_metadata.tool_usage = tool_usage
+
+        # Show both models in metadata
+        retrieval_model = result.retrieval_rounds[0].model if result.retrieval_rounds else ""
+        turn_metadata.model = f"{retrieval_model}+{result.synthesis_model}"
+
         session_store.add_turn(
             campaign_id=self.campaign.id,
             player_input=player_input,
-            gm_response=final_response,
-            tool_calls=tool_call_records if tool_call_records else None,
+            gm_response=result.response,
+            tool_calls=all_tool_calls or None,
             metadata=turn_metadata,
         )
 
@@ -232,7 +192,7 @@ class GMAgent:
         if self._summarizer and should_update_summary(self.session):
             self._update_rolling_summary()
 
-        return final_response
+        return result.response
 
     def process_turn_stream(
         self, player_input: str, metadata: TurnMetadata | None = None
@@ -289,7 +249,7 @@ class GMAgent:
             current_finish_reason = "stop"
             current_usage = {}
 
-            for chunk in self.llm.chat_stream(messages, tools=tools):
+            for chunk in self.llm.chat_stream(messages, tools=tools, temperature=TEMPERATURE_CREATIVE):
                 # Buffer text chunks
                 if chunk.delta:
                     accumulated_text += chunk.delta

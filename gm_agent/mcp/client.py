@@ -27,6 +27,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Map class names to conventional registry keys used by get_server()
+_CLASS_TO_SERVER_NAME: dict[str, str] = {
+    "PF2eRAGServer": "pf2e-rag",
+    "EncounterServer": "encounter",
+    "CreatureModifierServer": "creature-modifier",
+    "CampaignStateServer": "campaign-state",
+    "CharacterRunnerServer": "character-runner",
+    "NPCBuilderServer": "npc-builder",
+    "NPCKnowledgeServer": "npc-knowledge",
+    "SubsystemServer": "subsystem",
+    "FictionTreeServer": "fiction-tree",
+    "MicroscopeSessionServer": "microscope-session",
+    "SettlementServer": "settlement",
+    "DelveServer": "delve",
+    "DungeonServer": "dungeon",
+    "GroundingServer": "grounding",
+}
+
+
+def _server_registry_name(server: "MCPServer") -> str:
+    """Get the conventional registry name for a server instance."""
+    class_name = type(server).__name__
+    return _CLASS_TO_SERVER_NAME.get(class_name, class_name)
+
 
 class MCPClient:
     """Unified MCP client with dual-mode support.
@@ -66,22 +90,14 @@ class MCPClient:
 
     def _init_local_servers(self) -> None:
         """Initialize local MCP servers based on context."""
-        # Import here to avoid circular imports
-        from .pf2e_rag import PF2eRAGServer
         from .dice import DiceServer
-        from .encounter import EncounterServer
         from .notes import NotesServer
-        from .campaign_state import CampaignStateServer
-        from .character_runner import CharacterRunnerServer
-        from .npc_builder import NPCBuilderServer
-        from .npc_knowledge import NPCKnowledgeServer
-        from .creature_modifier import CreatureModifierServer
-        from .subsystem import SubsystemServer
 
         campaign_id = self.context.get("campaign_id")
         llm = self.context.get("llm")
 
-        # Load campaign books for scoped searches
+        # Load campaign for system-aware init
+        campaign = None
         campaign_books: list[str] = []
         if campaign_id:
             from ..storage.campaign import CampaignStore
@@ -92,20 +108,90 @@ class MCPClient:
             except Exception:
                 pass
 
-        # Always create stateless servers
-        self._local_servers["pf2e-rag"] = PF2eRAGServer(campaign_books=campaign_books)
+        # Always create system-agnostic servers
         self._local_servers["dice"] = DiceServer()
-        self._local_servers["encounter"] = EncounterServer()
         self._local_servers["notes"] = NotesServer()
-        self._local_servers["creature-modifier"] = CreatureModifierServer()
 
-        # Create campaign-dependent servers if campaign_id provided
+        # Core campaign servers (system-agnostic) — available to all game systems
+        game_systems = campaign.game_systems if campaign else ["pf2e"]
         if campaign_id:
-            self._local_servers["campaign-state"] = CampaignStateServer(campaign_id)
-            self._local_servers["character-runner"] = CharacterRunnerServer(campaign_id, llm=llm)
-            self._local_servers["npc-builder"] = NPCBuilderServer(campaign_id, llm=llm)
-            self._local_servers["npc-knowledge"] = NPCKnowledgeServer(campaign_id)
-            self._local_servers["subsystem"] = SubsystemServer(campaign_id)
+            try:
+                from .campaign_state import CampaignStateServer
+                from .npc_knowledge import NPCKnowledgeServer
+                from ..systems import get_system as _get_sys_for_plugins
+
+                # Collect plugins from all game systems
+                system_plugins = []
+                for sys_name in game_systems:
+                    try:
+                        system = _get_sys_for_plugins(sys_name)
+                        system_plugins.extend(system.campaign_plugins(campaign_id))
+                    except KeyError:
+                        pass
+
+                self._local_servers["campaign-state"] = CampaignStateServer(
+                    campaign_id, system_plugins=system_plugins,
+                )
+                self._local_servers["npc-knowledge"] = NPCKnowledgeServer(campaign_id)
+            except ImportError:
+                pass
+
+        # System-driven server initialization
+        server_context = {
+            "campaign_id": campaign_id,
+            "campaign_books": campaign_books,
+            "llm": llm,
+        }
+
+        system_servers_added = False
+        try:
+            from ..systems import get_system
+            for sys_name in game_systems:
+                try:
+                    system = get_system(sys_name)
+                    for server in system.servers(server_context):
+                        server_key = _server_registry_name(server)
+                        self._local_servers[server_key] = server
+                        system_servers_added = True
+                except KeyError:
+                    pass
+        except ImportError:
+            pass
+
+        # Fallback: if no system-driven servers were added (e.g. registry empty),
+        # use the hardcoded PF2e path for backward compatibility
+        if not system_servers_added:
+            self._init_pf2e_servers_fallback(
+                campaign_id, campaign_books, llm,
+            )
+
+        # Fiction tree server (available to all systems when campaign exists)
+        if campaign_id:
+            try:
+                from .fiction_tree import FictionTreeServer
+                self._local_servers["fiction-tree"] = FictionTreeServer(campaign_id)
+            except ImportError:
+                pass
+
+        # Grounding server — available when PF2e + generation games coexist
+        if campaign_id and "pf2e-rag" in self._local_servers:
+            has_gen_game = any(
+                k in self._local_servers
+                for k in ("microscope-session", "settlement", "delve", "dungeon")
+            )
+            if has_gen_game:
+                try:
+                    from .grounding import GroundingServer
+                    from ..storage.fiction_tree import FictionTreeStore
+                    from ..rag import PathfinderSearch
+
+                    fiction_store = FictionTreeStore(campaign_id)
+                    search = PathfinderSearch()
+                    self._local_servers["grounding"] = GroundingServer(
+                        campaign_id, fiction_store, search, llm=llm,
+                    )
+                except (ImportError, Exception):
+                    pass
 
         # Add Foundry server if provided
         if self._foundry_server:
@@ -113,6 +199,40 @@ class MCPClient:
 
         # Build tool routing map
         self._build_tool_map()
+
+    def _init_pf2e_servers_fallback(
+        self,
+        campaign_id: str | None,
+        campaign_books: list[str],
+        llm: Any,
+    ) -> None:
+        """Fallback: hardcoded PF2e server init (backward compatibility).
+
+        Core servers (campaign-state, npc-knowledge) are already created above,
+        so this only adds PF2e-specific servers.
+        """
+        from .pf2e_rag import PF2eRAGServer
+        from .encounter import EncounterServer
+        from .creature_modifier import CreatureModifierServer
+        from .character_runner import CharacterRunnerServer
+        from .npc_builder import NPCBuilderServer
+        from .subsystem import SubsystemServer
+
+        self._local_servers["pf2e-rag"] = PF2eRAGServer(campaign_books=campaign_books)
+        self._local_servers["encounter"] = EncounterServer()
+        self._local_servers["creature-modifier"] = CreatureModifierServer()
+
+        if campaign_id:
+            # Only add core servers if not already created
+            if "campaign-state" not in self._local_servers:
+                from .campaign_state import CampaignStateServer
+                self._local_servers["campaign-state"] = CampaignStateServer(campaign_id)
+            if "npc-knowledge" not in self._local_servers:
+                from .npc_knowledge import NPCKnowledgeServer
+                self._local_servers["npc-knowledge"] = NPCKnowledgeServer(campaign_id)
+            self._local_servers["character-runner"] = CharacterRunnerServer(campaign_id, llm=llm)
+            self._local_servers["npc-builder"] = NPCBuilderServer(campaign_id, llm=llm)
+            self._local_servers["subsystem"] = SubsystemServer(campaign_id)
 
     def _build_tool_map(self) -> None:
         """Build mapping from tool names to their servers."""
@@ -200,6 +320,13 @@ class MCPClient:
         Returns:
             ToolResult with success status and data/error
         """
+        # Sanitize corrupted tool names from tokenizer artifacts
+        # e.g., "search_content<|channel|>json" → "search_content"
+        if "<|" in name:
+            name = name.split("<|")[0]
+        if "?" in name:
+            name = name.split("?")[0]
+
         if self.mode == "local":
             return self._call_tool_local(name, args)
         else:

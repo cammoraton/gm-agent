@@ -280,9 +280,11 @@ class TestPF2eRAGServerWithMock:
         server = PF2eRAGServer(db_path="/fake/path")
         tools = server.list_tools()
 
-        assert len(tools) == 16
+        assert len(tools) == 18
         tool_names = [t.name for t in tools]
         assert "lookup_creature" in tool_names
+        assert "list_entities" in tool_names
+        assert "get_player_advice" in tool_names
         assert "lookup_spell" in tool_names
         assert "lookup_item" in tool_names
         assert "lookup_npc" in tool_names
@@ -838,3 +840,634 @@ class TestPartialNameMatchBoost:
         # Both results should be present (mock doesn't apply SQL-level boost)
         assert "Innkeeper" in result.data
         assert "Commoner" in result.data
+
+
+class TestRemasterOnly:
+    """Tests for the remaster_only parameter on search_content."""
+
+    def test_search_content_has_remaster_only_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content tool should have remaster_only parameter."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_content")
+        param_names = [p.name for p in tool.parameters]
+        assert "remaster_only" in param_names
+
+    def test_remaster_only_passes_is_remaster(self, mock_pathfinder_search: MockPathfinderSearch):
+        """remaster_only=True should pass is_remaster=True to search."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {
+            "query": "dragon",
+            "remaster_only": True,
+        })
+        assert result.success is True
+        # Verify the call was made with is_remaster=True
+        assert len(mock_pathfinder_search.calls) > 0
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("is_remaster") is True
+
+    def test_remaster_only_false_does_not_filter(self, mock_pathfinder_search: MockPathfinderSearch):
+        """remaster_only=False or absent should not pass is_remaster."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {
+            "query": "dragon",
+        })
+        assert result.success is True
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert "is_remaster" not in kwargs
+
+
+class TestInferEntityTypes:
+    """Tests for _infer_entity_types() type inference for list queries."""
+
+    def test_no_list_intent(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        assert _infer_entity_types("dragon") is None
+        assert _infer_entity_types("fire damage") is None
+        assert _infer_entity_types("how does flanking work") is None
+
+    def test_types_of_dragon(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        result = _infer_entity_types("types of dragon")
+        assert result is not None
+        assert "creature" in result
+        assert "creature_family" in result
+
+    def test_kinds_of_undead(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        result = _infer_entity_types("kinds of undead")
+        assert result is not None
+        assert "creature" in result
+
+    def test_list_of_elementals(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        result = _infer_entity_types("list of elemental creatures")
+        assert result is not None
+        assert "creature" in result
+
+    def test_all_the_demons(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        result = _infer_entity_types("what are the different types of demon")
+        assert result is not None
+        assert "creature" in result
+
+    def test_creature_family_name_match(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        families = {"drake", "linnorm", "sphinx"}
+        result = _infer_entity_types("types of drake", creature_family_names=families)
+        assert result is not None
+        assert "creature" in result
+
+    def test_no_creature_keyword_no_match(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        # "types of damage" has list intent but no creature keyword
+        result = _infer_entity_types("types of damage")
+        assert result is None
+
+    def test_what_are_the_different_types(self):
+        from gm_agent.rag.search import _infer_entity_types
+
+        result = _infer_entity_types("what are the different types of giant")
+        assert result is not None
+        assert "creature" in result
+
+
+class TestBoostTuning:
+    """Verify game_mechanic and guidance boosts were lowered."""
+
+    def test_game_mechanic_boost_lowered(self):
+        from gm_agent.rag.search import PathfinderSearch
+        assert PathfinderSearch.DEFAULT_TYPE_BOOST["game_mechanic"] == 10
+
+    def test_guidance_boost_lowered(self):
+        from gm_agent.rag.search import PathfinderSearch
+        assert PathfinderSearch.DEFAULT_TYPE_BOOST["guidance"] == 12
+
+    def test_creature_boost_still_high(self):
+        from gm_agent.rag.search import PathfinderSearch
+        assert PathfinderSearch.DEFAULT_TYPE_BOOST["creature"] == 25
+
+    def test_spell_boost_still_high(self):
+        from gm_agent.rag.search import PathfinderSearch
+        assert PathfinderSearch.DEFAULT_TYPE_BOOST["spell"] == 20
+
+
+class TestInformalSynonyms:
+    """Tests for informal synonym expansion (aliases normally loaded from DB)."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_remaster_aliases(self):
+        """Populate REMASTER_ALIASES with test data (normally loaded from DB at runtime)."""
+        import gm_agent.rag.search as search_mod
+        test_aliases = {
+            "grandmother": "granny",
+            "grandma": "granny",
+        }
+        orig_aliases = dict(search_mod.REMASTER_ALIASES)
+        orig_index = search_mod._SORTED_ALIAS_INDEX
+        search_mod.REMASTER_ALIASES.update(test_aliases)
+        search_mod._SORTED_ALIAS_INDEX = search_mod._build_sorted_alias_index(
+            search_mod.REMASTER_ALIASES
+        )
+        yield
+        search_mod.REMASTER_ALIASES.clear()
+        search_mod.REMASTER_ALIASES.update(orig_aliases)
+        search_mod._SORTED_ALIAS_INDEX = orig_index
+
+    def test_grandmother_expands_to_granny(self):
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("grandmother")
+        assert any("granny" in q.lower() for q in queries)
+
+    def test_granny_expands_to_grandmother(self):
+        """Reverse alias: granny → grandmother."""
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("granny")
+        assert any("grandmother" in q.lower() for q in queries)
+
+    def test_grandma_expands_to_granny(self):
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("grandma")
+        assert any("granny" in q.lower() for q in queries)
+
+    def test_multi_word_per_word_expansion(self):
+        """'Grandmother Hu' should expand to 'granny Hu' via per-word expansion."""
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("Grandmother Hu")
+        assert any("granny" in q.lower() for q in queries)
+
+    def test_informal_synonyms_loaded(self):
+        from gm_agent.rag.search import REMASTER_ALIASES
+        assert "grandmother" in REMASTER_ALIASES
+        assert REMASTER_ALIASES["grandmother"] == "granny"
+
+
+class TestCreatureFamilyAliases:
+    """Tests for creature family alias expansion (aliases normally loaded from DB)."""
+
+    _DRAGON_ALIASES = {
+        "red dragon": "cinder dragon",
+        "blue dragon": "stormcrown dragon",
+        "black dragon": "rive dragon",
+        "green dragon": "jungle dragon",
+        "white dragon": "tundra dragon",
+        "gold dragon": "vizier dragon",
+        "silver dragon": "sovereign dragon",
+        "bronze dragon": "sea dragon",
+        "brass dragon": "desert dragon",
+        "copper dragon": "mirage dragon",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _patch_creature_family_aliases(self):
+        """Populate CREATURE_FAMILY_ALIASES with test data (normally loaded from DB at runtime)."""
+        import gm_agent.rag.search as search_mod
+        orig = dict(search_mod.CREATURE_FAMILY_ALIASES)
+        search_mod.CREATURE_FAMILY_ALIASES.update(self._DRAGON_ALIASES)
+        yield
+        search_mod.CREATURE_FAMILY_ALIASES.clear()
+        search_mod.CREATURE_FAMILY_ALIASES.update(orig)
+
+    def test_creature_family_aliases_loaded(self):
+        from gm_agent.rag.search import CREATURE_FAMILY_ALIASES
+        assert len(CREATURE_FAMILY_ALIASES) > 0
+        assert "red dragon" in CREATURE_FAMILY_ALIASES
+        assert CREATURE_FAMILY_ALIASES["red dragon"] == "cinder dragon"
+
+    def test_red_dragon_expands_to_cinder(self):
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("red dragon")
+        assert any("cinder dragon" in q.lower() for q in queries)
+
+    def test_cinder_dragon_expands_to_red(self):
+        """Reverse: cinder dragon → red dragon."""
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("cinder dragon")
+        assert any("red dragon" in q.lower() for q in queries)
+
+    def test_compound_query_adult_red_dragon(self):
+        """'adult red dragon' should expand to 'adult cinder dragon'."""
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("adult red dragon")
+        assert any("adult cinder dragon" in q.lower() for q in queries)
+
+    def test_blue_dragon_expands_to_stormcrown(self):
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("blue dragon")
+        assert any("stormcrown dragon" in q.lower() for q in queries)
+
+    def test_gold_dragon_expands_to_vizier(self):
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("gold dragon")
+        assert any("vizier dragon" in q.lower() for q in queries)
+
+    def test_all_ten_families_present(self):
+        from gm_agent.rag.search import CREATURE_FAMILY_ALIASES
+        expected = {
+            "red dragon", "blue dragon", "black dragon", "green dragon",
+            "white dragon", "gold dragon", "silver dragon", "bronze dragon",
+            "brass dragon", "copper dragon",
+        }
+        assert expected.issubset(set(CREATURE_FAMILY_ALIASES.keys()))
+
+    def test_non_dragon_query_unaffected(self):
+        """Queries without dragon families shouldn't get dragon expansions."""
+        from gm_agent.rag.search import expand_query_aliases
+        queries = expand_query_aliases("goblin warrior")
+        # Should only have the original query (+ any other alias expansions)
+        assert not any("dragon" in q.lower() for q in queries)
+
+
+class TestChapterScoping:
+    """Tests for chapter param on search tools."""
+
+    def test_search_content_has_chapter_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content tool should have chapter parameter."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_content")
+        param_names = [p.name for p in tool.parameters]
+        assert "chapter" in param_names
+
+    def test_search_lore_has_book_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_lore tool should have book parameter."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_lore")
+        param_names = [p.name for p in tool.parameters]
+        assert "book" in param_names
+        assert "chapter" in param_names
+
+    def test_search_guidance_has_book_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_guidance tool should have book parameter."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_guidance")
+        param_names = [p.name for p in tool.parameters]
+        assert "book" in param_names
+        assert "chapter" in param_names
+
+    def test_search_pages_has_chapter_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_pages tool should have chapter parameter."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        tool = server.get_tool("search_pages")
+        param_names = [p.name for p in tool.parameters]
+        assert "chapter" in param_names
+
+    def test_search_lore_passes_book(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_lore with book= should pass book to PathfinderSearch."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_lore", {
+            "query": "body horror",
+            "book": "Season of Ghosts",
+        })
+        assert result.success is True
+        # Verify book was passed through
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("book") == "Season of Ghosts"
+
+    def test_search_guidance_passes_book(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_guidance with book= should pass book to PathfinderSearch."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_guidance", {
+            "query": "running encounters",
+            "book": "GM Core",
+        })
+        assert result.success is True
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("book") == "GM Core"
+
+    def test_search_content_passes_chapter(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content with chapter= should pass chapter to PathfinderSearch."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {
+            "query": "encounters",
+            "book": "Player Core",
+            "chapter": "Chapter 2",
+        })
+        assert result.success is True
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("chapter") == "Chapter 2"
+
+    def test_search_pages_passes_chapter(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_pages with chapter= should pass chapter to search_pages."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_pages", {
+            "query": "goblin tactics",
+            "book": "Player Core",
+            "chapter": "Combat",
+        })
+        assert result.success is True
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("chapter") == "Combat"
+
+    def test_search_lore_passes_chapter(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_lore with chapter= should pass chapter to PathfinderSearch."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_lore", {
+            "query": "history",
+            "book": "Player Core",
+            "chapter": "Introduction",
+        })
+        assert result.success is True
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("chapter") == "Introduction"
+
+    def test_search_lore_excludes_npc_but_includes_deity(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_lore should NOT include 'npc' but SHOULD include 'deity'."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        server.call_tool("search_lore", {"query": "Willowshore elders"})
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        cats = kwargs.get("category", [])
+        assert "npc" not in cats
+        assert "deity" in cats
+
+    def test_search_lore_includes_place_types(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_lore should include region, settlement, landmark, historical_event."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        server.call_tool("search_lore", {"query": "Absalom"})
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        cats = kwargs.get("category", [])
+        for expected in ["region", "settlement", "landmark", "historical_event"]:
+            assert expected in cats, f"Expected '{expected}' in lore categories"
+
+    def test_lookup_creature_filters_irrelevant_families(self, mock_pathfinder_search: MockPathfinderSearch):
+        """lookup_creature should not prepend families whose name doesn't match query words."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        # Configure mock: creature search returns NPC, family search returns irrelevant beetle
+        mock_pathfinder_search._search_results = None
+        original_search = mock_pathfinder_search.search
+
+        call_count = [0]
+        def mock_search(query, **kwargs):
+            call_count[0] += 1
+            doc_type = kwargs.get("doc_type")
+            if doc_type == "creature":
+                return [{"name": "Stag Lord", "type": "creature", "category": "creature",
+                         "source": "AP", "book": "AP", "book_type": "adventure_path",
+                         "page": 1, "content": "A bandit leader", "metadata": {}, "score": 10.0}]
+            elif doc_type == "creature_family":
+                return [{"name": "Beetle", "type": "creature_family", "category": "creature",
+                         "source": "Monster Core", "book": "Monster Core", "book_type": "bestiary",
+                         "page": 5, "content": "Stag beetle family", "metadata": {}, "score": 8.0}]
+            return original_search(query, **kwargs)
+
+        mock_pathfinder_search.search = mock_search
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("lookup_creature", {"name": "Stag Lord"})
+        assert result.success is True
+        # Beetle should NOT appear because "Beetle" doesn't contain "stag" or "lord"
+        assert "Beetle" not in result.data[:200]
+
+    def test_lookup_creature_includes_relevant_families(self, mock_pathfinder_search: MockPathfinderSearch):
+        """lookup_creature should prepend families whose name matches query words."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        mock_pathfinder_search._search_results = None
+        original_search = mock_pathfinder_search.search
+
+        def mock_search(query, **kwargs):
+            doc_type = kwargs.get("doc_type")
+            if doc_type == "creature":
+                return [{"name": "Red Dragon", "type": "creature", "category": "creature",
+                         "source": "Monster Core", "book": "Monster Core", "book_type": "bestiary",
+                         "page": 1, "content": "A fearsome dragon", "metadata": {}, "score": 10.0}]
+            elif doc_type == "creature_family":
+                return [{"name": "Dragon", "type": "creature_family", "category": "creature",
+                         "source": "Monster Core", "book": "Monster Core", "book_type": "bestiary",
+                         "page": 2, "content": "Dragon family overview", "metadata": {}, "score": 8.0}]
+            return original_search(query, **kwargs)
+
+        mock_pathfinder_search.search = mock_search
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("lookup_creature", {"name": "dragon"})
+        assert result.success is True
+        # Dragon family SHOULD appear because "Dragon" contains "dragon"
+        assert "Dragon" in result.data
+
+    def test_search_content_adventure_type_expansion(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content with types='adventure' should expand to location/landmark/npc/etc."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {"query": "dragon", "types": "adventure"})
+        assert result.success is True
+        # Should have called search with expanded types
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        types = kwargs.get("include_types", [])
+        assert "location" in types
+        assert "landmark" in types
+        assert "npc" in types
+
+    def test_search_content_book_type_redirects_to_browse_book(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content with types='book' should redirect to browse_book, not call search."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("search_content", {"query": "dragon", "types": "book"})
+        assert result.success is True
+        # Should not have called the search engine — browse_book returns early
+        assert len(mock_pathfinder_search.calls) == 0
+
+    def test_tool_count_updated(self, mock_pathfinder_search: MockPathfinderSearch):
+        """PF2eRAGServer should still have the expected number of tools."""
+        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
+        server = PF2eRAGServer(db_path="/fake/path")
+        tools = server.list_tools()
+        assert len(tools) == 18  # unchanged — no new tools, just new params
+
+
+class TestAutoDetection:
+    """Tests for auto-detection of book/chapter references in query text."""
+
+    # Test book name index for detect_book_in_query
+    BOOK_INDEX = [
+        # Sorted by length descending (longest first)
+        ("season of ghosts 1 of 4 - the summer that never was", "Season of Ghosts 1 of 4 - The Summer that Never Was"),
+        ("lost omens absalom, city of lost omens", "Lost Omens Absalom, City of Lost Omens"),
+        ("abomination vaults", "Abomination Vaults"),
+        ("season of ghosts", None),  # Series prefix
+        ("blood lords", None),  # Series prefix
+        ("player core", "Player Core"),
+        ("monster core", "Monster Core"),
+        ("gm core", "GM Core"),
+        ("kingmaker", "Kingmaker"),
+    ]
+
+    # --- detect_book_in_query ---
+
+    def test_detect_book_ap_series(self):
+        """Detects AP series name and strips it from query."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("Season of Ghosts body horror", self.BOOK_INDEX)
+        assert book == "season of ghosts"
+        assert cleaned == "body horror"
+
+    def test_detect_book_ap_series_with_book_n(self):
+        """Detects AP series + Book N and combines them."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("Season of Ghosts Book 1 NPCs", self.BOOK_INDEX)
+        assert book == "season of ghosts book 1"
+        assert cleaned == "NPCs"
+
+    def test_detect_book_single_word(self):
+        """Detects single-word book name like Kingmaker."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("Kingmaker kingdom building", self.BOOK_INDEX)
+        assert book == "Kingmaker"
+        assert cleaned == "kingdom building"
+
+    def test_detect_book_multiword(self):
+        """Detects multi-word book name."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("Player Core healing spells", self.BOOK_INDEX)
+        assert book == "Player Core"
+        assert cleaned == "healing spells"
+
+    def test_detect_book_no_match(self):
+        """Returns None for queries without book names."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("dragons in caves", self.BOOK_INDEX)
+        assert book is None
+        assert cleaned == "dragons in caves"
+
+    def test_detect_book_entire_query(self):
+        """Returns None when book name IS the entire query."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("Season of Ghosts", self.BOOK_INDEX)
+        assert book is None
+        assert cleaned == "Season of Ghosts"
+
+    def test_detect_book_case_insensitive(self):
+        """Detection is case-insensitive."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("PLAYER CORE healing", self.BOOK_INDEX)
+        assert book == "Player Core"
+        assert cleaned == "healing"
+
+    def test_detect_book_word_boundary(self):
+        """Book name must match on word boundaries."""
+        from gm_agent.rag.search import detect_book_in_query
+        # "kingmaker" shouldn't match inside "kingmakers"
+        book, cleaned = detect_book_in_query("kingmakers guild", self.BOOK_INDEX)
+        assert book is None
+
+    def test_detect_book_preserves_remainder_case(self):
+        """Remaining query preserves original casing."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("GM Core Encounter Building Tips", self.BOOK_INDEX)
+        assert book == "GM Core"
+        assert cleaned == "Encounter Building Tips"
+
+    def test_detect_book_longest_match_wins(self):
+        """Longer book names match before shorter ones."""
+        from gm_agent.rag.search import detect_book_in_query
+        # "abomination vaults" should match, not just "vaults"
+        book, cleaned = detect_book_in_query("Abomination Vaults traps", self.BOOK_INDEX)
+        assert book == "Abomination Vaults"
+        assert cleaned == "traps"
+
+    def test_detect_book_in_middle(self):
+        """Detects book name in the middle of a query."""
+        from gm_agent.rag.search import detect_book_in_query
+        book, cleaned = detect_book_in_query("encounters in Kingmaker adventure", self.BOOK_INDEX)
+        assert book == "Kingmaker"
+        assert cleaned == "encounters in adventure"
+
+    # --- detect_chapter_in_query ---
+
+    def test_detect_chapter_numbered(self):
+        """Detects 'Chapter N' and strips it."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("Chapter 2 encounters")
+        assert chapter == "Chapter 2"
+        assert cleaned == "encounters"
+
+    def test_detect_chapter_ch_abbreviation(self):
+        """Detects 'Ch N' abbreviation."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("Ch 3 traps and hazards")
+        assert chapter == "Chapter 3"
+        assert cleaned == "traps and hazards"
+
+    def test_detect_chapter_ch_dot(self):
+        """Detects 'Ch. N' abbreviation."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("Ch. 5 finale")
+        assert chapter == "Chapter 5"
+        assert cleaned == "finale"
+
+    def test_detect_chapter_strips_book_n(self):
+        """Strips 'Book N' references even without chapter."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("Book 1 encounters")
+        assert chapter is None
+        assert cleaned == "encounters"
+
+    def test_detect_chapter_both_book_and_chapter(self):
+        """Strips both 'Book N' and 'Chapter N'."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("Book 1 Chapter 2 encounters")
+        assert chapter == "Chapter 2"
+        assert cleaned == "encounters"
+
+    def test_detect_chapter_no_match(self):
+        """Returns None when no chapter reference found."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("goblin encounters")
+        assert chapter is None
+        assert cleaned == "goblin encounters"
+
+    def test_detect_chapter_case_insensitive(self):
+        """Chapter detection is case-insensitive."""
+        from gm_agent.rag.search import detect_chapter_in_query
+        chapter, cleaned = detect_chapter_in_query("CHAPTER 4 boss fight")
+        assert chapter == "Chapter 4"
+        assert cleaned == "boss fight"
+
+    # --- Combined detection ---
+
+    def test_combined_book_and_chapter(self):
+        """Book and chapter detection work together."""
+        from gm_agent.rag.search import detect_book_in_query, detect_chapter_in_query
+        book, cleaned = detect_book_in_query("Kingmaker Chapter 2 encounters", self.BOOK_INDEX)
+        assert book == "Kingmaker"
+        chapter, final = detect_chapter_in_query(cleaned)
+        assert chapter == "Chapter 2"
+        assert final == "encounters"
+
+    def test_combined_ap_book_n_chapter(self):
+        """AP series + Book N + Chapter N all detected."""
+        from gm_agent.rag.search import detect_book_in_query, detect_chapter_in_query
+        book, cleaned = detect_book_in_query(
+            "Season of Ghosts Book 1 Chapter 2 encounters", self.BOOK_INDEX
+        )
+        assert book == "season of ghosts book 1"
+        chapter, final = detect_chapter_in_query(cleaned)
+        assert chapter == "Chapter 2"
+        assert final == "encounters"

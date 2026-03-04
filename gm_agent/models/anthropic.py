@@ -63,6 +63,7 @@ class AnthropicBackend(LLMBackend):
         messages: list[Message],
         tools: list[ToolDef] | None = None,
         thinking: dict | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
 
@@ -71,6 +72,7 @@ class AnthropicBackend(LLMBackend):
             tools: Optional tool definitions.
             thinking: Optional extended thinking config, e.g.
                       {"type": "enabled", "budget_tokens": 4096}.
+            temperature: Sampling temperature (0.0-1.0 for Anthropic).
 
         Includes retry logic for transient connection failures.
 
@@ -113,6 +115,8 @@ class AnthropicBackend(LLMBackend):
                     kwargs["tools"] = anthropic_tools
                 if thinking:
                     kwargs["thinking"] = thinking
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
 
                 response = self.client.messages.create(**kwargs)
                 return self._parse_response(response)
@@ -221,6 +225,7 @@ class AnthropicBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
         """Send messages and get a streaming response.
 
@@ -264,6 +269,8 @@ class AnthropicBackend(LLMBackend):
                     kwargs["system"] = system_msg
                 if anthropic_tools:
                     kwargs["tools"] = anthropic_tools
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
 
                 # Use streaming API
                 with self.client.messages.stream(**kwargs) as stream:

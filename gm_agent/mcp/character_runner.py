@@ -1,8 +1,10 @@
 """Character Runner MCP server for NPC/monster/player embodiment."""
 
+import json
+from datetime import datetime
 from typing import Any
 
-from ..config import CAMPAIGNS_DIR
+from ..config import CAMPAIGNS_DIR, TEMPERATURE_CREATIVE
 from ..models.base import LLMBackend, Message
 from ..storage.characters import CharacterStore
 from ..storage.dialogue import DialogueStore
@@ -294,6 +296,105 @@ class CharacterRunnerServer(MCPServer):
                     ),
                 ],
             ),
+            ToolDef(
+                name="check_morale",
+                description=(
+                    "Rule-based morale check. Returns a recommendation (holds/retreats/surrenders) "
+                    "based on the character's personality and current HP. No LLM required."
+                ),
+                parameters=[
+                    ToolParameter(name="character_name", type="string", description="Name of the character"),
+                    ToolParameter(
+                        name="hp_pct",
+                        type="number",
+                        description="Current HP as a percentage (0-100)",
+                    ),
+                    ToolParameter(
+                        name="allies_defeated",
+                        type="integer",
+                        description="Number of allies defeated this encounter",
+                        required=False,
+                        default=0,
+                    ),
+                    ToolParameter(
+                        name="is_surrounded",
+                        type="boolean",
+                        description="Whether the character is surrounded by enemies",
+                        required=False,
+                        default=False,
+                    ),
+                    ToolParameter(
+                        name="situation",
+                        type="string",
+                        description="Optional description of the current situation for context",
+                        required=False,
+                        default="",
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="set_emotional_state",
+                description=(
+                    "Set the current emotional state of a character. "
+                    "Supported emotions: frightened, angry, grieving, panicked, elated, "
+                    "suspicious, desperate, determined, conflicted."
+                ),
+                parameters=[
+                    ToolParameter(name="character_name", type="string", description="Name of the character"),
+                    ToolParameter(
+                        name="emotion",
+                        type="string",
+                        description="The emotion: frightened, angry, grieving, panicked, elated, suspicious, desperate, determined, conflicted",
+                    ),
+                    ToolParameter(
+                        name="intensity",
+                        type="integer",
+                        description="Intensity of the emotion (1-5, where 1=mild, 5=overwhelming)",
+                    ),
+                    ToolParameter(
+                        name="trigger",
+                        type="string",
+                        description="What caused this emotional state (optional)",
+                        required=False,
+                        default="",
+                    ),
+                ],
+            ),
+            ToolDef(
+                name="get_emotional_state",
+                description="Get the current emotional state of a character.",
+                parameters=[
+                    ToolParameter(name="character_name", type="string", description="Name of the character"),
+                ],
+            ),
+            ToolDef(
+                name="react_to_event",
+                description=(
+                    "LLM-driven: determine how a character reacts to a significant event. "
+                    "Optionally updates their emotional state. "
+                    "Event types: ally_death, betrayal, offer_received, threat_made, revelation, unexpected_kindness."
+                ),
+                parameters=[
+                    ToolParameter(name="character_name", type="string", description="Name of the character"),
+                    ToolParameter(
+                        name="event_type",
+                        type="string",
+                        description="Type: ally_death, betrayal, offer_received, threat_made, revelation, unexpected_kindness",
+                    ),
+                    ToolParameter(
+                        name="event_description",
+                        type="string",
+                        description="Description of what happened",
+                    ),
+                    ToolParameter(
+                        name="update_state",
+                        type="boolean",
+                        description="Whether to automatically update the character's emotional state",
+                        required=False,
+                        default=True,
+                    ),
+                ],
+            ),
         ]
 
     def list_tools(self) -> list[ToolDef]:
@@ -315,6 +416,14 @@ class CharacterRunnerServer(MCPServer):
                 return self._get_character(args)
             elif name == "list_characters":
                 return self._list_characters(args)
+            elif name == "check_morale":
+                return self._check_morale(args)
+            elif name == "set_emotional_state":
+                return self._set_emotional_state(args)
+            elif name == "get_emotional_state":
+                return self._get_emotional_state(args)
+            elif name == "react_to_event":
+                return self._react_to_event(args)
             else:
                 return ToolResult(success=False, error=f"Unknown tool: {name}")
         except Exception as e:
@@ -362,7 +471,7 @@ class CharacterRunnerServer(MCPServer):
             Message(role="user", content=user_message),
         ]
 
-        response = self.llm.chat(messages, tools=None)
+        response = self.llm.chat(messages, tools=None, temperature=TEMPERATURE_CREATIVE)
 
         # Log the dialogue
         session = session_store.get_current(self.campaign_id)
@@ -425,7 +534,7 @@ class CharacterRunnerServer(MCPServer):
             Message(role="user", content=user_message),
         ]
 
-        response = self.llm.chat(messages, tools=None)
+        response = self.llm.chat(messages, tools=None, temperature=TEMPERATURE_CREATIVE)
 
         return ToolResult(
             success=True,
@@ -474,7 +583,7 @@ class CharacterRunnerServer(MCPServer):
             Message(role="user", content=user_message),
         ]
 
-        response = self.llm.chat(messages, tools=None)
+        response = self.llm.chat(messages, tools=None, temperature=TEMPERATURE_CREATIVE)
 
         return ToolResult(
             success=True,
@@ -652,9 +761,31 @@ class CharacterRunnerServer(MCPServer):
                 f"\nSecrets you keep (do not reveal unless dramatically appropriate):\n{secrets}"
             )
 
+        # Use structured personality profile if available
+        personality_text = profile.personality or "A typical NPC"
+
+        # Inject current emotional state
+        if profile.emotional_state and profile.emotional_state.get("emotion"):
+            es = profile.emotional_state
+            personality_text += (
+                f"\n\nCurrent emotional state: {es['emotion']} (intensity {es.get('intensity', 1)}/5)"
+            )
+            if es.get("trigger"):
+                personality_text += f" — caused by: {es['trigger']}"
+
+        if profile.personality_profile:
+            try:
+                from ..systems.shared.personality import PersonalityProfile as PP
+                pp = PP.from_dict(profile.personality_profile)
+                structured = pp.describe_for_prompt()
+                if structured and structured != "- Balanced, neutral personality":
+                    personality_text = f"{personality_text}\n\nPersonality traits:\n{structured}"
+            except (ImportError, Exception):
+                pass
+
         return NPC_SYSTEM_PROMPT.format(
             name=profile.name,
-            personality=profile.personality or "A typical NPC",
+            personality=personality_text,
             speech_patterns=profile.speech_patterns or "Normal speech",
             knowledge=knowledge,
             goals=goals,
@@ -674,10 +805,21 @@ class CharacterRunnerServer(MCPServer):
             else "- Survive and protect territory"
         )
 
+        personality_text = profile.personality or "Typical for its kind"
+
+        # Inject current emotional state
+        if profile.emotional_state and profile.emotional_state.get("emotion"):
+            es = profile.emotional_state
+            personality_text += (
+                f"\n\nCurrent emotional state: {es['emotion']} (intensity {es.get('intensity', 1)}/5)"
+            )
+            if es.get("trigger"):
+                personality_text += f" — caused by: {es['trigger']}"
+
         return MONSTER_SYSTEM_PROMPT.format(
             name=profile.name,
             intelligence=profile.intelligence,
-            personality=profile.personality or "Typical for its kind",
+            personality=personality_text,
             instincts=instincts,
             goals=goals,
             morale=profile.morale or "Fights until threatened, then may flee",
@@ -691,14 +833,278 @@ class CharacterRunnerServer(MCPServer):
             else "- No particular quirks"
         )
 
+        # Enrich with structured personality if available
+        playstyle_text = profile.playstyle or "Balanced approach"
+        if profile.personality_profile:
+            try:
+                from ..systems.shared.personality import PersonalityProfile as PP
+                pp = PP.from_dict(profile.personality_profile)
+                structured = pp.describe_for_prompt()
+                if structured and structured != "- Balanced, neutral personality":
+                    playstyle_text = f"{playstyle_text}\n\nPersonality traits:\n{structured}"
+            except (ImportError, Exception):
+                pass
+
         return PLAYER_SYSTEM_PROMPT.format(
             name=profile.name,
             party_role=profile.party_role or "General adventurer",
-            playstyle=profile.playstyle or "Balanced approach",
+            playstyle=playstyle_text,
             risk_tolerance=profile.risk_tolerance,
             decision_making=profile.decision_making or "Makes decisions as they come",
             quirks=quirks,
         )
+
+    def _check_morale(self, args: dict[str, Any]) -> ToolResult:
+        """Rule-based morale check — no LLM required."""
+        character_name = args.get("character_name", "")
+        hp_pct = float(args.get("hp_pct", 100))
+        allies_defeated = int(args.get("allies_defeated", 0))
+        is_surrounded = bool(args.get("is_surrounded", False))
+
+        if not character_name:
+            return ToolResult(success=False, error="character_name is required")
+
+        profile = self._character_store.get_by_name(character_name)
+        if not profile:
+            return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+        # Detect disposition from morale + personality fields
+        morale_text = (profile.morale or "").lower()
+        personality_text = (profile.personality or "").lower()
+        combined = morale_text + " " + personality_text
+
+        if any(kw in combined for kw in ("fights to death", "never flees", "fanatical")):
+            disposition = "fearless"
+        elif any(kw in combined for kw in ("coward", "self-preservation", "retreat")):
+            disposition = "cautious"
+        elif "protect" in combined:
+            disposition = "protective"
+        else:
+            disposition = "standard"
+
+        # Allies defeated modifier: if 2+ down, upgrade urgency
+        effective_disposition = disposition
+        if allies_defeated >= 2 and disposition == "standard":
+            effective_disposition = "cautious"
+
+        # Determine recommendation
+        if effective_disposition == "fearless":
+            if hp_pct <= 10:
+                recommendation = "retreats"
+                reason = "Even the fearless retreat when near death (HP ≤ 10%)"
+            else:
+                recommendation = "holds"
+                reason = "Fearless — will not retreat until near death"
+        elif effective_disposition == "cautious":
+            if hp_pct <= 25:
+                recommendation = "surrenders"
+                reason = "Cautious character surrenders when badly injured"
+            elif hp_pct <= 50:
+                recommendation = "retreats"
+                reason = "Cautious character retreats at half HP"
+            else:
+                recommendation = "holds"
+                reason = "Cautious but still fighting"
+        elif effective_disposition == "protective":
+            recommendation = "holds"
+            reason = "Protective instinct overrides HP threshold while charge is present"
+        else:
+            # standard
+            if hp_pct <= 25:
+                recommendation = "retreats"
+                reason = "Standard morale: retreats at 25% HP"
+            elif is_surrounded and hp_pct <= 50:
+                recommendation = "surrenders"
+                reason = "Surrounded and at half HP — may surrender"
+            else:
+                recommendation = "holds"
+                reason = "Standard morale: holds position"
+
+        if allies_defeated >= 2 and disposition == "standard":
+            reason += f" (2+ allies defeated — acting like cautious)"
+
+        return ToolResult(
+            success=True,
+            data={
+                "recommendation": recommendation,
+                "reason": reason,
+                "disposition": effective_disposition,
+                "hp_pct": hp_pct,
+            },
+        )
+
+    def _set_emotional_state(self, args: dict[str, Any]) -> ToolResult:
+        """Set the emotional state of a character."""
+        character_name = args.get("character_name", "")
+        emotion = args.get("emotion", "")
+        intensity = int(args.get("intensity", 3))
+        trigger = args.get("trigger", "")
+
+        if not character_name:
+            return ToolResult(success=False, error="character_name is required")
+        if not emotion:
+            return ToolResult(success=False, error="emotion is required")
+
+        intensity = max(1, min(5, intensity))
+
+        profile = self._character_store.get_by_name(character_name)
+        if not profile:
+            return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+        self._set_emotional_state_internal(profile, emotion, intensity, trigger)
+
+        return ToolResult(
+            success=True,
+            data=(
+                f"{profile.name} emotional state set: {emotion} (intensity {intensity}/5)"
+                + (f" — triggered by: {trigger}" if trigger else "")
+            ),
+        )
+
+    def _set_emotional_state_internal(
+        self, profile: CharacterProfile, emotion: str, intensity: int, trigger: str = ""
+    ) -> None:
+        """Internal helper: update emotional_state on profile and save."""
+        profile.emotional_state = {
+            "emotion": emotion,
+            "intensity": max(1, min(5, intensity)),
+            "trigger": trigger,
+            "set_at": datetime.now().isoformat(),
+        }
+        self._character_store.update(profile)
+
+    def _get_emotional_state(self, args: dict[str, Any]) -> ToolResult:
+        """Get the emotional state of a character."""
+        character_name = args.get("character_name", "")
+
+        if not character_name:
+            return ToolResult(success=False, error="character_name is required")
+
+        profile = self._character_store.get_by_name(character_name)
+        if not profile:
+            return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+        es = profile.emotional_state
+        if not es or not es.get("emotion"):
+            return ToolResult(
+                success=True,
+                data={
+                    "emotion": "",
+                    "intensity": 0,
+                    "note": f"{profile.name} has no current emotional state set.",
+                },
+            )
+
+        return ToolResult(success=True, data=es)
+
+    def _react_to_event(self, args: dict[str, Any]) -> ToolResult:
+        """LLM-driven: determine how a character reacts to a significant event."""
+        if not self.llm:
+            return ToolResult(success=False, error="No LLM backend configured")
+
+        character_name = args.get("character_name", "")
+        event_type = args.get("event_type", "")
+        event_description = args.get("event_description", "")
+        update_state = bool(args.get("update_state", True))
+
+        if not character_name:
+            return ToolResult(success=False, error="character_name is required")
+        if not event_description:
+            return ToolResult(success=False, error="event_description is required")
+
+        profile = self._character_store.get_by_name(character_name)
+        if not profile:
+            return ToolResult(success=False, error=f"Character '{character_name}' not found")
+
+        # Fetch high-importance knowledge for context
+        knowledge_entries = self.knowledge.query_knowledge(
+            character_id=profile.id,
+            min_importance=5,
+            limit=15,
+        )
+        knowledge_summary = (
+            "\n".join(f"- {k.content}" for k in knowledge_entries)
+            if knowledge_entries
+            else "- No notable knowledge"
+        )
+
+        # Build system prompt
+        system_prompt = (
+            f"You are determining how {profile.name} reacts to an event. "
+            "Respond ONLY with JSON: "
+            "{\"reaction\": str, \"suggested_emotion\": str, \"suggested_intensity\": int, \"reason\": str}"
+        )
+
+        # Build user message
+        personality_summary = profile.personality or "A typical character"
+        current_es = profile.emotional_state
+        es_line = ""
+        if current_es and current_es.get("emotion"):
+            es_line = (
+                f"\nCurrent emotional state: {current_es['emotion']} "
+                f"(intensity {current_es.get('intensity', 1)}/5)"
+            )
+
+        user_message = (
+            f"Character: {profile.name}\n"
+            f"Personality: {personality_summary}{es_line}\n"
+            f"Known information:\n{knowledge_summary}\n\n"
+            f"Event type: {event_type}\n"
+            f"Event: {event_description}"
+        )
+
+        from ..models.base import Message
+        messages = [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=user_message),
+        ]
+
+        response = self.llm.chat(messages, tools=None, temperature=0.4)
+        raw_text = response.text
+
+        # Parse JSON response
+        parsed = self._parse_json_response(raw_text)
+
+        if parsed is None:
+            return ToolResult(
+                success=True,
+                data=f"[{profile.name} reacts]: {raw_text}",
+            )
+
+        reaction = parsed.get("reaction", raw_text)
+        suggested_emotion = parsed.get("suggested_emotion", "")
+        suggested_intensity = int(parsed.get("suggested_intensity", 3))
+        reason = parsed.get("reason", "")
+
+        state_change_line = ""
+        if update_state and suggested_emotion:
+            self._set_emotional_state_internal(
+                profile, suggested_emotion, suggested_intensity, event_description
+            )
+            state_change_line = (
+                f"\n[Emotional state updated: {suggested_emotion} (intensity {suggested_intensity}/5)]"
+            )
+
+        result_lines = [f"[{profile.name} reacts]: {reaction}"]
+        if reason:
+            result_lines.append(f"[Reason: {reason}]")
+        if state_change_line:
+            result_lines.append(state_change_line)
+
+        return ToolResult(success=True, data="\n".join(result_lines))
+
+    def _parse_json_response(self, text: str) -> dict | None:
+        """Parse a JSON response, stripping markdown fences if present."""
+        text = text.strip()
+        # Strip markdown code fences
+        if text.startswith("```"):
+            lines = text.split("\n")
+            lines = [l for l in lines if not l.startswith("```")]
+            text = "\n".join(lines).strip()
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _format_profile(self, profile: CharacterProfile) -> str:
         """Format a character profile for display."""

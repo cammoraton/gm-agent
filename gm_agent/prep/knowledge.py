@@ -15,6 +15,7 @@ import re
 import time
 from collections.abc import Callable
 
+from ..config import TEMPERATURE_MECHANICAL
 from ..models.base import LLMBackend, LLMResponse, Message
 from ..rag.search import PathfinderSearch
 from ..storage.knowledge import KnowledgeStore
@@ -129,13 +130,16 @@ def _call_llm(
     user_prompt: str,
     use_thinking: bool = True,
 ) -> LLMResponse:
-    """Make an LLM call with optional thinking enabled."""
+    """Make an LLM call with optional thinking enabled.
+
+    Uses low temperature for consistent, factual extraction.
+    """
     messages = [
         Message(role="system", content=system_prompt),
         Message(role="user", content=user_prompt),
     ]
     thinking = THINKING_CONFIG if use_thinking else None
-    return llm.chat(messages, thinking=thinking)
+    return llm.chat(messages, thinking=thinking, temperature=TEMPERATURE_MECHANICAL)
 
 
 def _slugify_name(name: str) -> str:
@@ -1054,24 +1058,21 @@ def resolve_ap_books(
 ) -> list[dict]:
     """Resolve an AP name to all its books (handles multi-book APs).
 
-    "Curtain Call" → 3 books, "Kingmaker" → 1 book.
+    "Curtain Call" -> 3 books, "Kingmaker" -> 1 book.
     Returns list of dicts with name, book_type, summary, chapters.
     """
-    all_books = search.list_books_with_summaries()
+    book_names = search.resolve_book_names(ap_name)
+    if not book_names:
+        return []
 
-    # Find books whose name contains the AP name (case-insensitive)
-    ap_lower = ap_name.lower()
-    matches = [
-        b for b in all_books
-        if ap_lower in b.get("book", "").lower()
-    ]
-
-    if not matches:
-        # Fall back to resolve_book_name for single match
-        exact = search.resolve_book_name(ap_name)
-        if exact:
-            summary = search.get_book_summary(exact)
-            matches = [{"book": exact, **(summary or {})}]
+    # Get summary info for each resolved book
+    matches = []
+    for name in book_names:
+        summary = search.get_book_summary(name)
+        if summary:
+            matches.append({"book": name, **summary})
+        else:
+            matches.append({"book": name})
 
     # Enrich with chapter data
     result = []

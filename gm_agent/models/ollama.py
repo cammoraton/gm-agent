@@ -58,6 +58,7 @@ class OllamaBackend(LLMBackend):
         messages: list[Message],
         tools: list[ToolDef] | None = None,
         thinking: dict | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
         """Send messages and get a response.
 
@@ -78,11 +79,15 @@ class OllamaBackend(LLMBackend):
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                response = self.client.chat(
-                    model=self.model,
-                    messages=ollama_messages,
-                    tools=ollama_tools,
-                )
+                kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": ollama_messages,
+                    "tools": ollama_tools,
+                }
+                if temperature is not None:
+                    kwargs["options"] = {"temperature": temperature}
+
+                response = self.client.chat(**kwargs)
                 self._available = True
                 return self._parse_response(response)
 
@@ -192,6 +197,7 @@ class OllamaBackend(LLMBackend):
         self,
         messages: list[Message],
         tools: list[ToolDef] | None = None,
+        temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
         """Send messages and get a streaming response.
 
@@ -213,12 +219,16 @@ class OllamaBackend(LLMBackend):
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                stream = self.client.chat(
-                    model=self.model,
-                    messages=ollama_messages,
-                    tools=ollama_tools,
-                    stream=True,
-                )
+                stream_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": ollama_messages,
+                    "tools": ollama_tools,
+                    "stream": True,
+                }
+                if temperature is not None:
+                    stream_kwargs["options"] = {"temperature": temperature}
+
+                stream = self.client.chat(**stream_kwargs)
 
                 accumulated_tool_calls = []
                 finish_reason = "stop"

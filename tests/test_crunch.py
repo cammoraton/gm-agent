@@ -668,11 +668,11 @@ class TestCrunchPipeline:
                 ])
                 self._real_call_count = 0
 
-            def chat(self, messages, tools=None, thinking=None):
+            def chat(self, messages, tools=None, thinking=None, temperature=None):
                 self._real_call_count += 1
                 if self._real_call_count == 1:
                     raise RuntimeError("LLM connection failed")
-                return super().chat(messages, tools, thinking=thinking)
+                return super().chat(messages, tools, thinking=thinking, temperature=temperature)
 
         cs = CampaignStore(base_dir=tmp_path)
         cs.create("Test Campaign")

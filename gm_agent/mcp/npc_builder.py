@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ..config import CAMPAIGNS_DIR
+from ..config import CAMPAIGNS_DIR, TEMPERATURE_MECHANICAL
 from ..models.base import LLMBackend, Message
 from ..storage.characters import CharacterStore
 from ..storage.schemas import CharacterProfile
@@ -238,7 +238,7 @@ class NPCBuilderServer(MCPServer):
         ]
 
         # Get LLM extraction
-        response = self.llm.chat(messages, tools=[])
+        response = self.llm.chat(messages, tools=[], temperature=TEMPERATURE_MECHANICAL)
 
         # Parse JSON response
         import json

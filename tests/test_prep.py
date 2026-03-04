@@ -1450,15 +1450,15 @@ class TestResolveAPBooks:
         """Test resolving a single-book AP like Kingmaker."""
         mock_search = MockPathfinderSearch()
 
-        # Override list_books_with_summaries to include Kingmaker
-        mock_search.list_books_with_summaries = lambda **kwargs: [
-            {
-                "book": "Kingmaker",
-                "book_type": "adventure",
-                "total_pages": 642,
-                "summary": "A massive AP",
-            },
-        ]
+        # Override resolve_book_names to return Kingmaker
+        mock_search.resolve_book_names = lambda query: ["Kingmaker"] if "kingmaker" in query.lower() else []
+
+        mock_search.get_book_summary = lambda book: {
+            "book": "Kingmaker",
+            "book_type": "adventure",
+            "total_pages": 642,
+            "summary": "A massive AP",
+        } if book == "Kingmaker" else None
 
         mock_search.list_chapters = lambda book: [
             {"chapter": "Chapter 1", "page_start": 1, "page_end": 100, "page_count": 100},
@@ -1478,12 +1478,19 @@ class TestResolveAPBooks:
         """Test resolving a multi-book AP like Curtain Call (3 books)."""
         mock_search = MockPathfinderSearch()
 
-        mock_search.list_books_with_summaries = lambda **kwargs: [
-            {"book": "Curtain Call 1 of 3 - Stage Fright", "book_type": "adventure", "total_pages": 100, "summary": "Act 1"},
-            {"book": "Curtain Call 2 of 3 - Skinsaw Man", "book_type": "adventure", "total_pages": 100, "summary": "Act 2"},
-            {"book": "Curtain Call 3 of 3 - Bring the House Down", "book_type": "adventure", "total_pages": 100, "summary": "Act 3"},
-            {"book": "Kingmaker", "book_type": "adventure", "total_pages": 642, "summary": "Other AP"},
+        curtain_books = [
+            "Curtain Call 1 of 3 - Stage Fright",
+            "Curtain Call 2 of 3 - Skinsaw Man",
+            "Curtain Call 3 of 3 - Bring the House Down",
         ]
+        book_summaries = {
+            curtain_books[0]: {"book": curtain_books[0], "book_type": "adventure", "total_pages": 100, "summary": "Act 1"},
+            curtain_books[1]: {"book": curtain_books[1], "book_type": "adventure", "total_pages": 100, "summary": "Act 2"},
+            curtain_books[2]: {"book": curtain_books[2], "book_type": "adventure", "total_pages": 100, "summary": "Act 3"},
+        }
+
+        mock_search.resolve_book_names = lambda query: curtain_books if "curtain call" in query.lower() else []
+        mock_search.get_book_summary = lambda book: book_summaries.get(book)
 
         mock_search.list_chapters = lambda book: [
             {"chapter": "Chapter 1", "page_start": 1, "page_end": 50, "page_count": 50},
@@ -1497,11 +1504,9 @@ class TestResolveAPBooks:
         assert all("Curtain Call" in n for n in names)
 
     def test_no_match_falls_back(self):
-        """Test fallback to resolve_book_name for unknown AP names."""
+        """Test fallback when no books match."""
         mock_search = MockPathfinderSearch()
-        mock_search.list_books_with_summaries = lambda **kwargs: []
-        # resolve_book_name returns None for unknown books by default
-        mock_search.resolve_book_name = lambda name: None
+        mock_search.resolve_book_names = lambda query: []
 
         result = resolve_ap_books(mock_search, "Nonexistent AP")
         assert result == []
@@ -1517,14 +1522,13 @@ class TestGenerateBackground:
         """Test generating background from AP book summaries."""
         mock_search = MockPathfinderSearch()
 
-        mock_search.list_books_with_summaries = lambda **kwargs: [
-            {
-                "book": "Kingmaker",
-                "book_type": "adventure",
-                "total_pages": 642,
-                "summary": "An adventure about settling the Stolen Lands.",
-            },
-        ]
+        mock_search.resolve_book_names = lambda query: ["Kingmaker"] if "kingmaker" in query.lower() else []
+        mock_search.get_book_summary = lambda book: {
+            "book": "Kingmaker",
+            "book_type": "adventure",
+            "total_pages": 642,
+            "summary": "An adventure about settling the Stolen Lands.",
+        } if book == "Kingmaker" else None
 
         mock_search.list_chapters = lambda book: [
             {"chapter": "Chapter 1", "page_start": 1, "page_end": 100, "page_count": 100},
@@ -1551,8 +1555,7 @@ class TestGenerateBackground:
     def test_no_books_returns_empty(self):
         """Test that no books returns empty dict."""
         mock_search = MockPathfinderSearch()
-        mock_search.list_books_with_summaries = lambda **kwargs: []
-        mock_search.resolve_book_name = lambda name: None
+        mock_search.resolve_book_names = lambda query: []
 
         llm = MockLLMBackend()
 
@@ -1563,9 +1566,10 @@ class TestGenerateBackground:
         """Test that progress callback is called during generation."""
         mock_search = MockPathfinderSearch()
 
-        mock_search.list_books_with_summaries = lambda **kwargs: [
-            {"book": "Test AP", "book_type": "adventure", "total_pages": 100, "summary": "Test"},
-        ]
+        mock_search.resolve_book_names = lambda query: ["Test AP"] if "test ap" in query.lower() else []
+        mock_search.get_book_summary = lambda book: {
+            "book": "Test AP", "book_type": "adventure", "total_pages": 100, "summary": "Test",
+        } if book == "Test AP" else None
         mock_search.list_chapters = lambda book: []
         mock_search.get_chapter_summary = lambda book, chapter: None
 
@@ -1584,9 +1588,10 @@ class TestGenerateBackground:
         """Test that markdown-fenced JSON is handled correctly."""
         mock_search = MockPathfinderSearch()
 
-        mock_search.list_books_with_summaries = lambda **kwargs: [
-            {"book": "Test AP", "book_type": "adventure", "total_pages": 100, "summary": "Test"},
-        ]
+        mock_search.resolve_book_names = lambda query: ["Test AP"] if "test ap" in query.lower() else []
+        mock_search.get_book_summary = lambda book: {
+            "book": "Test AP", "book_type": "adventure", "total_pages": 100, "summary": "Test",
+        } if book == "Test AP" else None
         mock_search.list_chapters = lambda book: []
         mock_search.get_chapter_summary = lambda book, chapter: None
 

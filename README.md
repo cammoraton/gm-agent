@@ -1,6 +1,6 @@
 # GM Agent
 
-An AI-powered Game Master for Pathfinder 2nd Edition (Remaster). GM Agent can run full tabletop RPG sessions autonomously, handling narrative, combat, NPCs, and rules adjudication. Supports multiple LLM backends (Ollama, OpenAI, Anthropic, OpenRouter) with Retrieval-Augmented Generation (RAG) for accurate rules and lore.
+An AI-powered Game Master for tabletop RPGs with a multi-system architecture. GM Agent supports Pathfinder 2e (Remaster) as its primary RPG. It can run full tabletop sessions autonomously — handling narrative, combat, NPCs, and rules adjudication — or serve as a GM prep tool. Supports multiple LLM backends (Ollama, OpenAI, Anthropic, OpenRouter) with 13 MCP servers, 152 tools, and 2035 tests.
 
 ## Why GM Agent?
 
@@ -14,9 +14,17 @@ An AI-powered Game Master for Pathfinder 2nd Edition (Remaster). GM Agent can ru
 
 ### Full GM Capabilities
 - **Autonomous Game Sessions**: Run complete RPG sessions with narrative, dialogue, and combat
-- **NPC & Monster Behavior**: Consistent character portrayals with personality profiles
+- **NPC & Monster Behavior**: Consistent character portrayals with personality profiles (50 traits, 20 archetypes)
 - **Combat Management**: Tactical decision-making for NPCs with Foundry VTT integration
 - **Dynamic Narration**: Contextual storytelling that adapts to player actions
+
+### Multi-System Architecture
+- **Plugin Architecture**: `GameSystem` ABC with `@register_system` — add new systems without modifying core code
+- **SystemToolPlugin Protocol**: Game-system-specific tools injected into shared servers
+
+### Worldbuilding Games
+- **Virtual Players**: AI participants with personality profiles and decision memory for solo play
+- **Fiction Tree**: Hierarchical narrative storage — any node can be expanded to arbitrary detail
 
 ### Campaign & Session Management
 - **Campaign Tracking**: Manage campaigns, party members, story arcs, and history
@@ -24,13 +32,29 @@ An AI-powered Game Master for Pathfinder 2nd Edition (Remaster). GM Agent can ru
 - **Session Continuity**: Automatic rolling summaries maintain context across sessions
 - **Scene State**: Track locations, NPCs present, time of day, and conditions
 - **Event Logging**: Full-text search over campaign history
-- **Training Data Collection**: Sessions are ready for fine-tuning datasets and pattern mining
+- **Session Crunch**: Post-session pipeline extracts events, dialogue, updates knowledge and arc
+- **Training Data Collection**: Sessions ready for fine-tuning datasets and pattern mining
+
+### NPC & Knowledge System
+- **NPC Knowledge**: Conditional sharing (trust, persuasion DC, duress) with party knowledge tracking
+- **Faction System**: Organization membership, shared knowledge, goals, and party reputation
+- **Location System**: Connected graph with knowledge and events per location
+- **Secret & Revelation Tracking**: Plot-critical secrets with automatic cross-system propagation
+- **PropagationBus**: Knowledge flows between NPCs, factions, locations, and party automatically
+
+### Campaign Prep
+- **LLM-Synthesized Knowledge**: Seed party, NPC, subsystem, and world knowledge from source books
+- **Fiction Extraction**: Convert fiction tree nodes (any system) into campaign knowledge — no LLM required
+- **Grounding**: Match abstract fiction to concrete game mechanics with LLM reranking
+- **Background Generation**: LLM generates campaign backgrounds from book/chapter summaries
 
 ### Pathfinder 2e Integration
-- **RAG-Powered Rules**: Look up creatures, spells, items, feats, and rules from official content
-- **Encounter Evaluation**: Calculate XP budgets, threat levels, and get tactical advice
+- **RAG-Powered Rules**: 16 tools — look up creatures, spells, items, feats, hazards, NPCs, rules, lore, and read-aloud text
+- **Encounter Tools**: Calculate XP budgets, threat levels, encounter advice, random encounters (5 tools)
+- **Creature Tools**: Elite/weak, templates, scaffold creatures/hazards/troops/swarms (7 tools)
+- **Subsystem Tools**: Victory points, influence, research, chase, infiltration, hazard, exploration (5 tools)
+- **AP Progress & Treasure**: Track adventure path completion, XP, and party wealth vs expected
 - **Dice Rolling**: Full PF2e mechanics including fortune/misfortune and degree of success
-- **Golarion Lore**: Search world lore, locations, deities, and organizations
 
 ### Deployment Options
 - **CLI Mode**: Interactive terminal sessions for local play
@@ -44,17 +68,19 @@ An AI-powered Game Master for Pathfinder 2nd Edition (Remaster). GM Agent can ru
 ## Advanced Features
 
 ### NPC System
-- **Character Profiles**: Build NPC profiles from RAG data with personality, speech patterns, and goals
+- **Character Profiles**: Build NPC profiles from RAG data with personality, speech patterns, and goals (1 tool)
+- **Character Runner**: Run NPCs, monsters, and emulate players with personality-aware behavior (6 tools)
 - **Relationships**: Track bidirectional relationships between NPCs and PCs with trust levels and attitudes
-- **Dialogue History**: SQLite FTS5-indexed conversation logs with searchable past statements
-- **Memory & Knowledge**: Redis-backed NPC knowledge with conditional sharing (trust, persuasion DC, duress)
+- **Dialogue History**: SQLite FTS5-indexed conversation logs with searchable past statements, flagging support
+- **Memory & Knowledge**: SQLite-backed NPC knowledge with conditional sharing (trust, persuasion DC, duress) — 7 tools including party knowledge
 - **Factions**: Organization membership with shared knowledge, goals, and party reputation
 
 ### World Simulation
-- **Location-based Awareness**: NPCs automatically know location-specific common knowledge
-- **Rumor Mill**: Information spreads between locations with accuracy degradation and propagation tracking
-- **Secret & Revelation Tracking**: Track plot-critical secrets with automatic consequence triggering
-- **Dynamic Information Flow**: Time-based propagation through connected locations and chatty NPCs
+- **Location Graph**: Connected locations with knowledge and events per location
+- **Cross-System Propagation**: PropagationBus mediates knowledge flow across secrets, factions, locations, and party
+- **Secret & Revelation Tracking**: Track plot-critical secrets with automatic knowledge propagation on reveal
+- **Session Recap**: Structured "Previously on..." recaps from event history and flagged dialogue
+- **Grounding Server**: Bridge fiction (from generation games) to game mechanics with LLM-powered matching (6 tools)
 
 ### Automation Enhancements
 - **Configurable Prompts**: Customize per-campaign prompts for player chat and NPC turns with template variables
@@ -101,56 +127,88 @@ gm-agent/
 ├── api.py                    # Flask REST API with MCP endpoints
 ├── wsgi.py                   # WSGI entry point for production
 ├── docker-compose.yml        # Docker Compose deployment
-├── data/                     # Data directory (gitignored)
-│   └── pathfinder_search.db  # Search database (built externally)
+├── data/                     # Data directory (partially gitignored)
+│   ├── pathfinder_search.db  # Pathfinder search database (gitignored, build from PDFs)
+│   └── games/                # Generation game tables (placeholder schemas in repo)
+│       ├── README.md         # Schema documentation and population instructions
+│       ├── microscope/       # Microscope seeds.json, oracles.json
+│       ├── ex_novo/          # Ex Novo tables.json
+│       ├── delve/            # Delve tables.json
+│       └── ex_umbra/         # Ex Umbra tables.json
 ├── gm_agent/
 │   ├── agent.py              # Core GMAgent class (full campaign mode)
 │   ├── chat.py               # Lightweight ChatAgent (no campaign state)
 │   ├── config.py             # Configuration and environment variables
 │   ├── context.py            # Context assembly for LLM prompts
+│   ├── propagation.py        # Cross-system knowledge propagation (PropagationBus)
 │   ├── summarizer.py         # Rolling session summaries
 │   ├── replay.py             # Session replay and model comparison
 │   ├── game_loop.py          # Full automation mode controller
 │   ├── event_queue.py        # Redis-backed event queuing
-│   ├── rumor_mill.py         # Rumor propagation engine
 │   ├── celery_app.py         # Celery application configuration
 │   ├── tasks.py              # Celery tasks (chat, summaries, async turns)
 │   ├── mcp_tasks.py          # Celery tasks for MCP tool execution
-│   ├── models/
-│   │   ├── base.py           # LLM backend interface
+│   ├── models/               # LLM backend abstraction
+│   │   ├── base.py           # LLMBackend ABC, LLMResponse (with thinking traces)
 │   │   ├── factory.py        # Backend factory (get_backend)
 │   │   ├── ollama.py         # Ollama integration
-│   │   ├── openai_backend.py # OpenAI integration
-│   │   ├── anthropic_backend.py # Anthropic integration
-│   │   └── openrouter.py     # OpenRouter integration
+│   │   ├── openai.py         # OpenAI/OpenRouter integration
+│   │   └── anthropic.py      # Anthropic integration
 │   ├── rag/                   # Pathfinder search (RAG)
 │   │   ├── __init__.py       # Module exports
 │   │   └── search.py         # PathfinderSearch (FTS5 + semantic)
-│   ├── mcp/                   # MCP (Model Context Protocol) servers
-│   │   ├── base.py           # Base classes for tools
-│   │   ├── registry.py       # Server registry and tool routing
-│   │   ├── client.py         # Unified MCP client (local/remote modes)
-│   │   ├── pf2e_rag.py       # RAG tools wrapper
-│   │   ├── encounter.py      # Encounter evaluation tools
+│   ├── mcp/                   # MCP tool servers
+│   │   ├── base.py           # MCPServer ABC, ToolDef, SystemToolPlugin protocol
+│   │   ├── campaign_state.py # 36 core narrative tools + plugin injection
+│   │   ├── grounding.py      # Fiction-to-mechanics grounding (6 tools, LLM reranking)
+│   │   ├── fiction_tree.py    # Fiction tree browsing tools
+│   │   ├── npc_knowledge.py   # NPC + party knowledge (7 tools)
+│   │   ├── npc_builder.py     # NPC profile builder (1 tool)
+│   │   ├── character_runner.py # NPC/monster/player behavior (6 tools)
 │   │   ├── dice.py           # Dice rolling tools
 │   │   ├── notes.py          # GM notes tools
-│   │   ├── redis_notes.py    # Redis-backed notes (distributed)
-│   │   ├── campaign_state.py # Scene/event management
-│   │   ├── character_runner.py # NPC/monster behavior
-│   │   └── foundry_vtt.py    # Foundry VTT integration (33 tools)
-│   └── storage/
-│       ├── schemas.py        # Pydantic data models (Campaign, Session, Character, Relationship, Faction, Location, Rumor, Secret, Knowledge)
-│       ├── campaign.py       # Campaign persistence
-│       ├── session.py        # Session persistence
-│       ├── characters.py     # Character profiles
-│       ├── dialogue.py       # NPC dialogue history (SQLite FTS5)
-│       ├── knowledge.py      # NPC memory & knowledge (Redis)
-│       ├── factions.py       # Faction & organization tracking
-│       ├── locations.py      # Location-based awareness
-│       ├── rumors.py         # Rumor storage and tracking
-│       ├── secrets.py        # Secret & revelation tracking
-│       └── history.py        # Campaign event history (SQLite FTS5)
-└── tests/                    # Test suite (740+ tests, 88% coverage)
+│   │   ├── foundry_vtt.py    # Foundry VTT integration (33 tools)
+│   │   ├── registry.py       # Server registry and tool routing
+│   │   └── client.py         # Unified MCP client (local/remote modes)
+│   ├── prep/                  # Campaign knowledge pipeline
+│   │   ├── pipeline.py       # PrepPipeline orchestrator
+│   │   ├── knowledge.py      # LLM-synthesized knowledge seeding
+│   │   ├── prompts.py        # Synthesis prompt templates
+│   │   ├── fiction_extraction.py # Fiction tree → knowledge (no LLM)
+│   │   ├── crunch.py         # CrunchPipeline (session post-processing)
+│   │   ├── session.py        # Session synthesis functions
+│   │   ├── session_prompts.py # Crunch prompt templates
+│   │   └── log.py            # JSONL training log
+│   ├── storage/               # Persistence layer (all SQLite/JSON-on-disk)
+│   │   ├── schemas.py        # Pydantic models (Campaign, Session, SceneState, etc.)
+│   │   ├── campaign.py       # Campaign persistence
+│   │   ├── session.py        # Session persistence
+│   │   ├── characters.py     # Character profiles
+│   │   ├── dialogue.py       # NPC dialogue history (SQLite FTS5)
+│   │   ├── knowledge.py      # Knowledge store (SQLite, dedup)
+│   │   ├── factions.py       # Faction & organization tracking
+│   │   ├── locations.py      # Location graph with knowledge/events
+│   │   ├── secrets.py        # Secret & revelation tracking
+│   │   ├── fiction_tree.py    # Hierarchical fiction storage (SQLite)
+│   │   ├── history.py        # Campaign event history (SQLite FTS5)
+│   │   └── subsystems.py     # Subsystem state (JSON-on-disk)
+│   └── systems/               # Multi-system game support
+│       ├── __init__.py       # GameSystem ABC, @register_system
+│       ├── pf2e/             # Pathfinder 2e (33 tools across 4 servers + plugin)
+│       │   ├── servers/      # PF2eRAGServer, EncounterServer, CreatureModifierServer, SubsystemServer
+│       │   ├── storage/      # APProgressStore, TreasureStore
+│       │   ├── campaign_tools.py # PF2eCampaignToolPlugin (4 tools)
+│       │   └── prompts.py    # GM system prompt
+│       ├── microscope/       # Microscope timeline generation (24 tools, seeds, oracles, mini-games)
+│       ├── ex_novo/          # Ex Novo settlement generation (13 tools)
+│       ├── delve/            # Delve underground kingdom (13 tools)
+│       ├── ex_umbra/         # Ex Umbra dungeon generation (13 tools)
+│       └── shared/           # Shared components
+│           ├── virtual_player_engine.py  # VP decision generation with memory
+│           ├── personality.py # PersonalityProfile (50 traits, 20 archetypes)
+│           ├── archetypes.py  # Archetype definitions
+│           └── cards.py       # Generic card deck for game procedures
+└── tests/                    # Test suite (2035 tests, 58 files)
 ```
 
 ## Installation
@@ -317,6 +375,24 @@ Chat commands:
 /help   - Show commands
 ```
 
+### Campaign Prep & Crunch
+
+```bash
+# Seed campaign knowledge from source books (LLM-synthesized)
+gm campaign prep my-campaign -b "Abomination Vaults" --backend anthropic
+
+# Generate campaign background from AP book summaries
+gm campaign generate my-campaign "Abomination Vaults"
+
+# Post-session crunch (extract events, dialogue, update knowledge/arc)
+gm campaign crunch my-campaign
+gm campaign crunch my-campaign session-123 -s events -s dialogue
+
+# Prep with options
+gm campaign prep my-campaign -b "Player Core" --skip npc --skip subsystem -v
+gm campaign prep my-campaign --from other-campaign  # Copy knowledge from another campaign
+```
+
 ### Utilities
 
 ```bash
@@ -441,21 +517,35 @@ gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:5000 wsgi:app
 cd infrastructure && docker compose up -d
 ```
 
-## MCP Tools
+## MCP Tools (152 tools across 13 servers)
 
-### Server Registry
+### Server Summary
 
-| Server | Stateless | Celery Eligible | Notes |
-|--------|-----------|-----------------|-------|
-| pf2e-rag | Yes | Yes | Direct instantiation |
-| dice | Yes | Yes | Direct instantiation |
-| encounter | Yes | Yes | Direct instantiation |
-| notes | No | Yes | Redis-backed in remote mode |
-| campaign-state | No | Yes | Requires campaign_id |
-| character-runner | No | Yes | Requires campaign_id + LLM |
-| foundry-vtt | No | **No** | Must stay in API (WebSocket) |
+| Server | Tools | Stateless | Notes |
+|--------|-------|-----------|-------|
+| CampaignStateServer | 36 + plugins | No | Core narrative layer |
+| PF2eRAGServer | 16 | Yes | Pathfinder content search |
+| EncounterServer | 5 | Yes | XP, threat, random encounters |
+| CreatureModifierServer | 7 | Yes | Elite/weak, templates, scaffolding |
+| SubsystemServer | 5 | No | VP, influence, chase, etc. |
+| PF2eCampaignToolPlugin | 4 | No | Travel, hazards, AP progress, treasure |
+| NPCKnowledgeServer | 7 | No | NPC + party knowledge |
+| CharacterRunnerServer | 6 | No | NPC/monster/player behavior |
+| NPCBuilderServer | 1 | No | Profile generation from RAG |
+| GroundingServer | 6 | No | Fiction-to-mechanics grounding |
+| MicroscopeSessionServer | 24 | No | Timeline generation |
+| SettlementServer | 13 | No | Ex Novo settlement generation |
+| DelveServer | 13 | No | Delve underground kingdom |
+| DungeonServer | 13 | No | Ex Umbra dungeon generation |
+| DiceServer | 6 | Yes | Dice rolling |
+| NotesServer | 6 | No | GM notes |
+| FoundryVTTServer | 33 | No | Foundry VTT integration |
 
-### RAG Tools (7 tools)
+### Campaign State Tools (36 core tools)
+
+Narrative layer management — scene state, event logging, history search, relationships, factions, locations, secrets, dialogue, session recaps, fiction extraction. Game-system-specific tools (travel time, hazard detection, AP progress, treasure) injected via `SystemToolPlugin`.
+
+### PF2e RAG Tools (16 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -463,11 +553,20 @@ cd infrastructure && docker compose up -d
 | `lookup_spell` | Look up spell details by name |
 | `lookup_item` | Look up item/equipment by name |
 | `lookup_location` | Look up location/city lore by name |
+| `lookup_hazard` | Look up hazard by name |
+| `lookup_encounter` | Look up encounter area details |
+| `lookup_npc` | Look up NPC by name |
 | `search_rules` | Search rules, conditions, mechanics |
 | `search_lore` | Search world lore, history, nations |
 | `search_content` | General search with type filters |
+| `search_guidance` | Search GM guidance and advice |
+| `get_read_aloud` | Get read-aloud text for locations |
+| `search_pages` | Full page text search |
+| `get_db_stats` | Database statistics |
+| `find_page` | Find page for a term |
+| `browse_book` | Browse book/chapter summaries |
 
-### Encounter Tools (4 tools)
+### Encounter Tools (5 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -475,6 +574,39 @@ cd infrastructure && docker compose up -d
 | `suggest_encounter` | Get creature composition suggestions |
 | `calculate_creature_xp` | XP value of single creature |
 | `get_encounter_advice` | GM advice on encounter design |
+| `roll_random_encounter` | Generate random encounter from XP budget |
+
+### Creature Modifier Tools (7 tools)
+
+| Tool | Description |
+|------|-------------|
+| `apply_elite_weak` | Apply elite or weak adjustments |
+| `apply_template` | Apply creature template from RAG |
+| `get_creature_stats` | Get baseline stats by level |
+| `scaffold_creature` | Build custom creature by level |
+| `scaffold_hazard` | Build custom hazard by level |
+| `scaffold_troop` | Build troop from base creature |
+| `scaffold_swarm` | Build swarm from base creature |
+
+### Worldbuilding Game Tools (63 tools)
+
+| Server | Tools | Description |
+|--------|-------|-------------|
+| MicroscopeSessionServer | 24 | Timeline: periods, events, scenes, legacies, palette, focus, seeds, oracles, mini-games, virtual players |
+| SettlementServer | 13 | Ex Novo: factions, districts, landmarks, events, phases, virtual players |
+| DelveServer | 13 | Delve: rooms, traps, units, combat, trade, virtual players |
+| DungeonServer | 13 | Ex Umbra: foundation, cards, exploration, tremors, heart, virtual players |
+
+### Grounding Tools (6 tools)
+
+| Tool | Description |
+|------|-------------|
+| `ground_node` | Ground fiction node to game mechanics |
+| `suggest_groundings` | Suggest mechanical matches |
+| `ground_settlement` | Ground settlement to locations/NPCs |
+| `ground_dungeon` | Ground dungeon rooms to encounters |
+| `ground_timeline` | Ground timeline events to history |
+| `list_groundings` | List existing groundings |
 
 ### Dice Tools (6 tools)
 
@@ -486,35 +618,6 @@ cd infrastructure && docker compose up -d
 | `roll_misfortune` | Roll twice, take lower |
 | `check_result` | Determine degree of success vs DC |
 | `roll_check` | Combined roll + check in one step |
-
-### Notes Tools (6 tools)
-
-| Tool | Description |
-|------|-------------|
-| `add_note` | Add note with tags/importance |
-| `list_notes` | List notes (filter by tag/importance) |
-| `search_notes` | Search notes by content/tags |
-| `delete_note` | Delete a note |
-| `update_note` | Update note content/tags |
-| `get_important_notes` | Get high/critical importance notes |
-
-### Campaign State Tools (5 tools)
-
-| Tool | Description |
-|------|-------------|
-| `update_scene` | Update current scene state |
-| `log_event` | Record significant events |
-| `search_history` | Search session history |
-| `get_recent_events` | Get recent events |
-| `get_scene` | Get current scene state |
-
-### Character Runner Tools (3 tools)
-
-| Tool | Description |
-|------|-------------|
-| `embody_character` | Generate in-character dialogue |
-| `get_character_action` | Determine NPC/monster action |
-| `list_characters` | List available character profiles |
 
 ## Foundry VTT Integration
 
@@ -772,26 +875,15 @@ uv run pytest --run-integration
 
 ### Test Coverage
 
-The test suite includes 740+ tests with 88% coverage:
+The test suite includes **2035 tests** across **58 test files**:
 
-- **Schemas** (`test_schemas.py`): Pydantic model validation
-- **Context** (`test_context.py`): Context assembly for LLM
-- **Storage** (`test_storage.py`): Campaign/session persistence
-- **MCP** (`test_mcp.py`): MCP server tools
-- **Agent** (`test_agent.py`): GMAgent integration
-- **API** (`test_api.py`): REST API endpoints
-- **CLI** (`test_cli.py`): Command-line interface
-- **Chat** (`test_chat.py`): ChatAgent
-- **Dice** (`test_dice.py`): Dice rolling mechanics
-- **Notes** (`test_notes.py`): Notes management
-- **Encounter** (`test_encounter.py`): Encounter evaluation
-- **Campaign State** (`test_campaign_state.py`): Scene/event tools
-- **Character Runner** (`test_character_runner.py`): NPC behaviors
-- **Summarizer** (`test_summarizer.py`): Rolling summaries
-- **Foundry VTT** (`test_foundry_vtt.py`): Bridge and 33 Foundry tools
-- **Game Loop** (`test_game_loop.py`): Full automation mode
-- **History** (`test_history.py`): History search index
-- **Backend Tests**: Ollama, OpenAI, Anthropic backends
+- **Core**: agent, chat, context, schemas, storage, summarizer, API, CLI
+- **MCP Servers**: RAG (48), campaign state (48), encounter (34), creature modifier (66), subsystem (55), dice, notes, character runner, NPC builder, NPC knowledge
+- **Game Systems**: microscope (99), ex_novo (55), delve (54), ex_umbra (54), systems registration (Phase 0)
+- **Storage**: factions, locations, secrets, knowledge, dialogue, history, fiction tree, AP progress, treasure, relationships, propagation
+- **Worldbuilding**: grounding (28), fiction extraction (20), virtual player (36), personality, shared cards
+- **Prep & Crunch**: prep pipeline (100), crunch pipeline (35)
+- **Infrastructure**: game loop, Foundry VTT (33 tools), backends (Ollama, OpenAI, Anthropic), streaming, event queue, replay
 
 ## RAG Database
 
@@ -828,12 +920,14 @@ The RAG system is split into two components:
 
 ### Database Schema
 
-The search database structure:
+The search database structure (v7):
 
-- `content` table with FTS5 index for full-text search
-- Columns: `type`, `name`, `level`, `traits`, `source`, `content`, `url`
-- Content types: `creature`, `spell`, `item`, `feat`, `class`, `ancestry`, `rule`, `location`, `deity`, `npc`, `lore`
-- Optional: `embeddings` table for semantic search vectors
+- `content` — primary entity table with FTS5 index; columns: `id` (TEXT PK), `name`, `type`, `category`, `book`, `book_type`, `is_remaster`, `page`, `content`, `metadata`
+- `pages` — full page text; columns: `id` (INT PK), `book`, `page_number`, `chapter`, `content`
+- `embeddings` — semantic search vectors; columns: `source_type`, `source_id`, `book`, `page_number`, `chunk_index`, `chunk_text`, `embedding` (BLOB), `model_name`
+- `page_summaries`, `chapter_summaries`, `book_summaries` — AI-generated summaries with structured metadata
+- Content types: `creature`, `spell`, `item`, `feat`, `class`, `ancestry`, `rule`, `location`, `deity`, `npc`, `lore`, `hazard`, `settlement`, `landmark`, `region`, `subsystem`, `game_mechanic`, `guidance`, and more
+- Optional: `embeddings` table for semantic search (384-dim float32, L2-normalized)
 
 ### Building Your Own Database
 
@@ -869,6 +963,23 @@ The search database structure:
 
 Place the database at `data/pathfinder_search.db` or set `RAG_DB_PATH` in your `.env`.
 
+## Generation Game Data
+
+GM Agent supports Microscope, Ex Novo, Delve, and Ex Umbra as worldbuilding games. Each game uses random tables, seeds, and oracles loaded from JSON files in `data/games/`.
+
+### ⚠️ Copyright Notice: Full Tables Require the Source Books
+
+**The `data/games/` directory contains placeholder JSON files only.** The full random tables, seeds, and oracles come from these games — please buy them to support the designers:
+
+- **Microscope** by Ben Robbins — [lamemage.com](https://www.lamemage.com/microscope/)
+- **Ex Novo** by Martin Nerukar & Konstantinos Dimopoulos — [sharkbombs.itch.io/ex-novo](https://sharkbombs.itch.io/ex-novo)
+- **Delve** by Anna Blackwell — [blackwellwriter.itch.io/delve-a-solo-map-drawing-game](https://blackwellwriter.itch.io/delve-a-solo-map-drawing-game)
+- **Ex Umbra** by Martin Nerukar — [sharkbombs.itch.io](https://sharkbombs.itch.io/)
+
+**What's included:** Schema-demonstrating placeholders with 2–3 entries per table. The system is fully functional with these placeholders — you get the complete tool set and virtual player support, just with limited content.
+
+**To get the full experience:** Purchase the PDFs and populate the JSON files. See `data/games/README.md` for the exact schema each file expects.
+
 ## Development
 
 ### Code Style
@@ -892,63 +1003,72 @@ uv run black . && uv run pylint gm_agent
 
 ### Adding New Tools
 
-1. Create a new MCP server in `gm_agent/mcp/`:
+**Option A: Standalone MCP Server** — for new tool categories:
 
 ```python
 from .base import MCPServer, ToolDef, ToolParameter, ToolResult
 
 class MyServer(MCPServer):
-    def __init__(self):
-        self._tools = [
-            ToolDef(
-                name="my_tool",
-                description="What the tool does",
-                parameters=[
-                    ToolParameter(
-                        name="arg1",
-                        type="string",
-                        description="Argument description",
-                    ),
-                ],
-            ),
-        ]
-
     def list_tools(self) -> list[ToolDef]:
-        return self._tools
+        return [ToolDef(name="my_tool", description="...", parameters=[...])]
 
     def call_tool(self, name: str, args: dict) -> ToolResult:
         if name == "my_tool":
-            return self._my_tool(args)
+            return ToolResult(success=True, data="result")
         return ToolResult(success=False, error=f"Unknown tool: {name}")
-
-    def _my_tool(self, args: dict) -> ToolResult:
-        # Implementation
-        return ToolResult(success=True, data={"result": "value"})
 
     def close(self) -> None:
         pass
 ```
 
-2. Register the server in `gm_agent/mcp/registry.py`:
+Register in your system's `servers()` method or in the MCP registry.
+
+**Option B: SystemToolPlugin** — for game-system-specific tools on CampaignStateServer:
 
 ```python
-SERVERS["my-server"] = ServerInfo(
-    stateless=True,
-    celery_eligible=True,
-)
+from gm_agent.mcp.base import ToolDef, ToolParameter, ToolResult
+
+class MyPlugin:
+    def tool_defs(self) -> list[ToolDef]:
+        return [ToolDef(name="my_system_tool", description="...", parameters=[...])]
+
+    def call_tool(self, name: str, args: dict, server) -> ToolResult:
+        if name == "my_system_tool":
+            return ToolResult(success=True, data="result")
+        raise KeyError(name)
+
+    def close(self) -> None:
+        pass
 ```
 
-3. Update `_build_tool_mapping()` in registry.py to include your server
+Pass to `CampaignStateServer(campaign_id, system_plugins=[MyPlugin()])`.
 
-4. Add tests in `tests/test_my_server.py`
+**Option C: New Game System** — for a complete game:
+
+```python
+from gm_agent.systems import GameSystem, register_system
+
+@register_system
+class MyGameSystem(GameSystem):
+    name = "my_game"
+    display_name = "My Game"
+    category = "generation"  # or "rpg"
+
+    def servers(self, context):
+        return [MyServer(context.get("campaign_id"))]
+
+    def system_prompt(self):
+        return "You are facilitating a My Game session..."
+```
 
 ### Project Structure Guidelines
 
 - Use Pydantic models for all data structures
 - MCP servers should be stateless where possible
-- Storage is file-based JSON (campaigns directory)
+- Storage is SQLite-backed (campaigns directory)
 - Tests should use fixtures from `conftest.py`
-- Use MCPClient for tool execution (supports local/remote modes)
+- Game-system-specific tools use `SystemToolPlugin` for CampaignStateServer injection
+- Generation game servers should support virtual players (add/turn/remove tools)
 
 ## License
 

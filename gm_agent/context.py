@@ -54,7 +54,44 @@ def build_context(
     uncertainty_mode = prefs.get("uncertainty_mode", "gm")
 
     # Build system prompt with campaign context
-    system_parts = [GM_SYSTEM_PROMPT]
+    # Use system-aware prompt if campaign has a primary_system set
+    primary_prompt = GM_SYSTEM_PROMPT
+    try:
+        from .systems import get_system
+        system = get_system(campaign.primary_system)
+        primary_prompt = system.system_prompt()
+    except (KeyError, AttributeError):
+        pass  # Fall back to default GM_SYSTEM_PROMPT
+
+    system_parts = [primary_prompt]
+
+    # Append full secondary system prompts
+    try:
+        from .systems import get_system as _get_sys
+        for sys_name in campaign.game_systems:
+            if sys_name != campaign.primary_system:
+                try:
+                    secondary = _get_sys(sys_name)
+                    section = (
+                        f"\n## {secondary.display_name} — Worldbuilding Tools\n\n"
+                        f"This campaign uses {secondary.display_name} for collaborative "
+                        f"worldbuilding. When the player wants to use these tools, follow "
+                        f"the procedures below.\n\n"
+                        f"{secondary.system_prompt()}"
+                    )
+                    # PF2e grounding guidance when gen game + PF2e coexist
+                    if secondary.category == "generation" and "pf2e" in campaign.game_systems:
+                        section += (
+                            f"\n\nAfter creating fiction with {secondary.display_name}, "
+                            f"use the grounding tools (ground_timeline, ground_settlement, "
+                            f"ground_dungeon) and extract_fiction_knowledge to connect "
+                            f"the created fiction to Pathfinder 2e mechanics and campaign knowledge."
+                        )
+                    system_parts.append(section)
+                except KeyError:
+                    pass
+    except (AttributeError, ImportError):
+        pass
 
     # Add RAG aggressiveness prompt
     if rag_level in RAG_PROMPTS:

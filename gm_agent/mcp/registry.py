@@ -82,10 +82,20 @@ SERVERS: dict[str, ServerInfo] = {
         celery_eligible=True,
         requires_campaign=True,
     ),
+    "fiction-tree": ServerInfo(
+        stateless=False,
+        celery_eligible=True,
+        requires_campaign=True,
+    ),
     "foundry-vtt": ServerInfo(
         stateless=False,
         celery_eligible=False,  # Must stay in API (WebSocket)
         requires_websocket=True,
+    ),
+    "grounding": ServerInfo(
+        stateless=False,
+        celery_eligible=True,
+        requires_campaign=True,
     ),
 }
 
@@ -207,7 +217,30 @@ def _build_tool_mapping() -> None:
     for tool in subsystem_tools:
         TOOL_TO_SERVER[tool] = "subsystem"
 
+    # Fiction tree tools (requires campaign_id)
+    fiction_tree_tools = [
+        "browse_fiction_tree",
+        "get_fiction_node",
+        "search_fiction",
+        "add_fiction_node",
+        "update_fiction_node",
+        "link_fiction_node",
+    ]
+    for tool in fiction_tree_tools:
+        TOOL_TO_SERVER[tool] = "fiction-tree"
+
     # Foundry VTT tools will be added dynamically when server connects
+
+
+def register_system_tools(system_name: str, tools: list[str]) -> None:
+    """Register tools from a game system's servers.
+
+    Args:
+        system_name: The system identifier (e.g. "microscope")
+        tools: List of tool names from the system's servers
+    """
+    for tool in tools:
+        TOOL_TO_SERVER[tool] = system_name
 
 
 def get_server_for_tool(tool_name: str) -> str | None:

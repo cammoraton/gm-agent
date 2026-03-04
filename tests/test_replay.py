@@ -183,7 +183,11 @@ class TestSessionReplayer:
 
                         def chat_side_effect(*args, **kwargs):
                             call_count[0] += 1
-                            if call_count[0] == 2:
+                            # Each process_turn() = 2 LLM calls (orchestrator + narrator).
+                            # The orchestrator catches its own LLM errors (call 3) and falls
+                            # back gracefully, so we must raise during the narrator (call 4)
+                            # for the error to propagate to the replay layer.
+                            if call_count[0] == 4:
                                 raise ValueError("Test error")
                             return LLMResponse(text="Response", tool_calls=[], finish_reason="stop")
 

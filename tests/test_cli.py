@@ -730,7 +730,6 @@ class TestChatCommand:
 
             cli_runner.invoke(cli, ["chat", "-v"], input="/quit\n")
 
-        # With the new --backend option, llm may be None if no backend specified
         mock_agent_class.assert_called_once_with(llm=None, verbose=True)
 
     def test_chat_error_handling(self, cli_runner: CliRunner):

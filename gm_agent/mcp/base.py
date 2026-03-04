@@ -1,7 +1,7 @@
 """MCP server base classes."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -96,6 +96,27 @@ class ToolResult(BaseModel):
         if isinstance(self.data, list):
             return "\n\n".join(str(item) for item in self.data)
         return str(self.data)
+
+
+@runtime_checkable
+class SystemToolPlugin(Protocol):
+    """Protocol for system-specific tool plugins.
+
+    Allows game systems (PF2e, etc.) to inject tools into shared servers
+    like CampaignStateServer without hardcoding system imports.
+    """
+
+    def tool_defs(self) -> list[ToolDef]:
+        """Return tool definitions provided by this plugin."""
+        ...
+
+    def call_tool(self, name: str, args: dict[str, Any], server: Any) -> ToolResult:
+        """Handle a tool call. Server gives access to shared state."""
+        ...
+
+    def close(self) -> None:
+        """Clean up plugin resources."""
+        ...
 
 
 class MCPServer(ABC):

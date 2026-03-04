@@ -76,6 +76,8 @@ class Campaign(BaseModel):
     books: list[str] = Field(default_factory=list)
     party: list[PartyMember] = Field(default_factory=list)
     preferences: dict[str, Any] = Field(default_factory=dict)
+    game_systems: list[str] = Field(default_factory=lambda: ["pf2e"])
+    primary_system: str = "pf2e"
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -147,6 +149,14 @@ class CharacterProfile(BaseModel):
 
     # Relationships
     relationships: list[Relationship] = Field(default_factory=list)
+
+    # Session-scoped emotional state
+    # Structure: {"emotion": str, "intensity": int (1-5), "trigger": str, "set_at": ISO str}
+    # Supported: frightened, angry, grieving, panicked, elated, suspicious, desperate, determined, conflicted
+    emotional_state: dict[str, Any] = Field(default_factory=dict)
+
+    # Structured personality (MoE trait system, optional)
+    personality_profile: dict[str, Any] | None = None
 
     # Faction membership
     faction_ids: list[str] = Field(default_factory=list)
