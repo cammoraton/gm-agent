@@ -48,6 +48,17 @@ RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND")  # None = use LLM_BACKEND
 RETRIEVAL_MODEL = os.getenv("RETRIEVAL_MODEL")  # None = use backend default
 RETRIEVAL_TEMPERATURE = float(os.getenv("RETRIEVAL_TEMPERATURE", "0.0"))
 SYNTHESIS_TEMPERATURE = float(os.getenv("SYNTHESIS_TEMPERATURE", "0.1"))
+# Reasoning effort for split-pipeline phases (gpt-oss and compatible models).
+# Empty string disables the parameter (model uses its own default, typically "medium").
+# Empty string = model default (medium). High caused regression (more rumination,
+# fewer tool calls). Low showed higher ceiling but higher variance floor — reverted.
+ORCHESTRATOR_REASONING_EFFORT = os.getenv("ORCHESTRATOR_REASONING_EFFORT", "")
+NARRATOR_REASONING_EFFORT = os.getenv("NARRATOR_REASONING_EFFORT", "")
+
+# Chat mode defaults — orchestrator (tool calls) and narrator (synthesis).
+# Format: "backend" or "backend:model" (e.g. "openrouter:openai/gpt-oss-20b").
+CHAT_BACKEND = os.getenv("CHAT_BACKEND", "openrouter:openai/gpt-oss-20b")
+NARRATOR_BACKEND = os.getenv("NARRATOR_BACKEND", "")  # empty = same as CHAT_BACKEND
 
 # Redis/Celery settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

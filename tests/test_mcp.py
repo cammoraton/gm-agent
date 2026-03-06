@@ -185,22 +185,20 @@ class TestMockMCPServer:
     """Tests for MockMCPServer (validates test infrastructure)."""
 
     def test_list_tools_returns_five(self, mock_mcp_server: MockMCPServer):
-        """MockMCPServer should return 5 tools."""
+        """MockMCPServer should return 3 tools."""
         tools = mock_mcp_server.list_tools()
-        assert len(tools) == 7
+        assert len(tools) == 3
 
         tool_names = [t.name for t in tools]
-        assert "lookup_creature" in tool_names
-        assert "lookup_spell" in tool_names
-        assert "lookup_item" in tool_names
+        assert "lookup" in tool_names
         assert "search_rules" in tool_names
         assert "search_content" in tool_names
 
     def test_get_tool_by_name(self, mock_mcp_server: MockMCPServer):
         """MCPServer.get_tool should find tool by name."""
-        tool = mock_mcp_server.get_tool("lookup_creature")
+        tool = mock_mcp_server.get_tool("lookup")
         assert tool is not None
-        assert tool.name == "lookup_creature"
+        assert tool.name == "lookup"
 
     def test_get_tool_nonexistent(self, mock_mcp_server: MockMCPServer):
         """MCPServer.get_tool should return None for missing tool."""
@@ -208,27 +206,23 @@ class TestMockMCPServer:
         assert tool is None
 
     def test_call_lookup_creature(self, mock_mcp_server: MockMCPServer):
-        """MockMCPServer should return mock creature data."""
-        result = mock_mcp_server.call_tool("lookup_creature", {"name": "goblin"})
+        """MockMCPServer should return mock entity data for lookup."""
+        result = mock_mcp_server.call_tool("lookup", {"type": "creature", "name": "goblin"})
 
         assert result.success is True
-        assert "Goblin" in result.data
         assert "creature" in result.data
 
     def test_call_lookup_spell(self, mock_mcp_server: MockMCPServer):
-        """MockMCPServer should return mock spell data."""
-        result = mock_mcp_server.call_tool("lookup_spell", {"name": "fireball"})
+        """MockMCPServer should return mock entity data for lookup."""
+        result = mock_mcp_server.call_tool("lookup", {"type": "spell", "name": "fireball"})
 
         assert result.success is True
-        assert "Fireball" in result.data
-        assert "spell" in result.data
 
     def test_call_lookup_item(self, mock_mcp_server: MockMCPServer):
-        """MockMCPServer should return mock item data."""
-        result = mock_mcp_server.call_tool("lookup_item", {"name": "longsword"})
+        """MockMCPServer should return mock entity data for lookup."""
+        result = mock_mcp_server.call_tool("lookup", {"type": "item", "name": "longsword"})
 
         assert result.success is True
-        assert "Longsword" in result.data
 
     def test_call_search_rules(self, mock_mcp_server: MockMCPServer):
         """MockMCPServer should return mock rules data."""
@@ -255,16 +249,16 @@ class TestMockMCPServer:
 
     def test_calls_are_recorded(self, mock_mcp_server: MockMCPServer):
         """MockMCPServer should record all calls."""
-        mock_mcp_server.call_tool("lookup_creature", {"name": "goblin"})
-        mock_mcp_server.call_tool("lookup_spell", {"name": "fireball"})
+        mock_mcp_server.call_tool("lookup", {"type": "creature", "name": "goblin"})
+        mock_mcp_server.call_tool("search_rules", {"query": "flanking"})
 
         assert len(mock_mcp_server.calls) == 2
-        assert mock_mcp_server.calls[0] == ("lookup_creature", {"name": "goblin"})
-        assert mock_mcp_server.calls[1] == ("lookup_spell", {"name": "fireball"})
+        assert mock_mcp_server.calls[0] == ("lookup", {"type": "creature", "name": "goblin"})
+        assert mock_mcp_server.calls[1] == ("search_rules", {"query": "flanking"})
 
     def test_custom_tool_results(self, mock_mcp_with_errors: MockMCPServer):
         """MockMCPServer should use custom tool results."""
-        result = mock_mcp_with_errors.call_tool("lookup_creature", {"name": "goblin"})
+        result = mock_mcp_with_errors.call_tool("lookup", {"type": "creature", "name": "goblin"})
 
         assert result.success is False
         assert "Database connection failed" in result.error
@@ -280,20 +274,18 @@ class TestPF2eRAGServerWithMock:
         server = PF2eRAGServer(db_path="/fake/path")
         tools = server.list_tools()
 
-        assert len(tools) == 18
+        assert len(tools) == 9
         tool_names = [t.name for t in tools]
-        assert "lookup_creature" in tool_names
+        assert "lookup" in tool_names
         assert "list_entities" in tool_names
         assert "get_player_advice" in tool_names
-        assert "lookup_spell" in tool_names
-        assert "lookup_item" in tool_names
-        assert "lookup_npc" in tool_names
         assert "search_rules" in tool_names
         assert "search_content" in tool_names
         assert "search_pages" in tool_names
         assert "get_db_stats" in tool_names
         assert "find_page" in tool_names
         assert "browse_book" in tool_names
+        assert "get_read_aloud" not in tool_names
 
     def test_tool_definitions_valid(self, mock_pathfinder_search: MockPathfinderSearch):
         """All PF2eRAGServer tools should have valid definitions."""
@@ -311,11 +303,11 @@ class TestPF2eRAGServerWithMock:
             assert "parameters" in ollama_format["function"]
 
     def test_lookup_creature_calls_search(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_creature should call PathfinderSearch correctly."""
+        """lookup with type=creature should call PathfinderSearch correctly."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_creature", {"name": "goblin"})
+        result = server.call_tool("lookup", {"type": "creature", "name": "goblin"})
 
         assert result.success is True
         assert len(mock_pathfinder_search.calls) >= 1
@@ -324,21 +316,21 @@ class TestPF2eRAGServerWithMock:
         assert query == "goblin"
 
     def test_lookup_spell_calls_search(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_spell should call PathfinderSearch with spell types."""
+        """lookup with type=spell should call PathfinderSearch with spell types."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_spell", {"name": "fireball"})
+        result = server.call_tool("lookup", {"type": "spell", "name": "fireball"})
 
         assert result.success is True
         assert len(mock_pathfinder_search.calls) >= 1
 
     def test_lookup_item_calls_search(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_item should call PathfinderSearch with item types."""
+        """lookup with type=item should call PathfinderSearch with item types."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_item", {"name": "longsword"})
+        result = server.call_tool("lookup", {"type": "item", "name": "longsword"})
 
         assert result.success is True
 
@@ -390,7 +382,7 @@ class TestPF2eRAGServerWithMock:
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_creature", {"name": "goblin"})
+        result = server.call_tool("lookup", {"type": "creature", "name": "goblin"})
 
         # Should contain formatted result with book info
         assert result.success is True
@@ -422,11 +414,11 @@ class TestPF2eRAGServerWithMock:
         assert "schema v4" in output
 
     def test_lookup_npc(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_npc should search both NPC and creature categories and merge results."""
+        """lookup with type=npc should search both NPC and creature categories and merge results."""
         from gm_agent.mcp.pf2e_rag import PF2eRAGServer
 
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_npc", {"name": "Goblin"})
+        result = server.call_tool("lookup", {"type": "npc", "name": "Goblin"})
 
         assert result.success is True
         # Should have searched multiple times (npc category, creature category, pages)
@@ -438,12 +430,33 @@ class TestPF2eRAGServerWithMock:
 
         server = PF2eRAGServer(db_path="/fake/path")
 
-        tool = server.get_tool("lookup_creature")
+        tool = server.get_tool("lookup")
         assert tool is not None
-        assert tool.name == "lookup_creature"
+        assert tool.name == "lookup"
 
         tool = server.get_tool("nonexistent")
         assert tool is None
+
+    def test_lookup_location_with_book(self, mock_pathfinder_search: MockPathfinderSearch):
+        """lookup(type=location) with book= should scope search and surface read_aloud."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("lookup", {"type": "location", "name": "Entrance", "book": "Abomination Vaults"})
+
+        assert result.success is True
+        assert len(mock_pathfinder_search.calls) >= 1
+        _, kwargs = mock_pathfinder_search.calls[0]
+        assert kwargs.get("book") == "Abomination Vaults"
+
+    def test_get_read_aloud_redirects_to_location(self, mock_pathfinder_search: MockPathfinderSearch):
+        """get_read_aloud (hallucinated tool name) should redirect to _lookup_location."""
+        from gm_agent.mcp.pf2e_rag import PF2eRAGServer
+
+        server = PF2eRAGServer(db_path="/fake/path")
+        result = server.call_tool("get_read_aloud", {"location": "Main Hall", "book": "Abomination Vaults"})
+
+        assert result.success is True
 
     def test_find_page(self, mock_pathfinder_search: MockPathfinderSearch):
         """find_page should return page references for a term."""
@@ -1101,21 +1114,13 @@ class TestChapterScoping:
         param_names = [p.name for p in tool.parameters]
         assert "chapter" in param_names
 
-    def test_search_lore_has_book_param(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_lore tool should have book parameter."""
+    def test_search_content_has_scope_param(self, mock_pathfinder_search: MockPathfinderSearch):
+        """search_content tool should have scope parameter for lore/guidance filtering."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        tool = server.get_tool("search_lore")
+        tool = server.get_tool("search_content")
         param_names = [p.name for p in tool.parameters]
-        assert "book" in param_names
-        assert "chapter" in param_names
-
-    def test_search_guidance_has_book_param(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_guidance tool should have book parameter."""
-        from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
-        server = PF2eRAGServer(db_path="/fake/path")
-        tool = server.get_tool("search_guidance")
-        param_names = [p.name for p in tool.parameters]
+        assert "scope" in param_names
         assert "book" in param_names
         assert "chapter" in param_names
 
@@ -1128,11 +1133,12 @@ class TestChapterScoping:
         assert "chapter" in param_names
 
     def test_search_lore_passes_book(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_lore with book= should pass book to PathfinderSearch."""
+        """search_content with scope=lore and book= should pass book to PathfinderSearch."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("search_lore", {
+        result = server.call_tool("search_content", {
             "query": "body horror",
+            "scope": "lore",
             "book": "Season of Ghosts",
         })
         assert result.success is True
@@ -1142,11 +1148,12 @@ class TestChapterScoping:
         assert kwargs.get("book") == "Season of Ghosts"
 
     def test_search_guidance_passes_book(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_guidance with book= should pass book to PathfinderSearch."""
+        """search_content with scope=guidance and book= should pass book to PathfinderSearch."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("search_guidance", {
+        result = server.call_tool("search_content", {
             "query": "running encounters",
+            "scope": "guidance",
             "book": "GM Core",
         })
         assert result.success is True
@@ -1183,11 +1190,12 @@ class TestChapterScoping:
         assert kwargs.get("chapter") == "Combat"
 
     def test_search_lore_passes_chapter(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_lore with chapter= should pass chapter to PathfinderSearch."""
+        """search_content with scope=lore and chapter= should pass chapter to PathfinderSearch."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("search_lore", {
+        result = server.call_tool("search_content", {
             "query": "history",
+            "scope": "lore",
             "book": "Player Core",
             "chapter": "Introduction",
         })
@@ -1197,10 +1205,10 @@ class TestChapterScoping:
         assert kwargs.get("chapter") == "Introduction"
 
     def test_search_lore_excludes_npc_but_includes_deity(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_lore should NOT include 'npc' but SHOULD include 'deity'."""
+        """search_content with scope=lore should NOT include 'npc' but SHOULD include 'deity'."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        server.call_tool("search_lore", {"query": "Willowshore elders"})
+        server.call_tool("search_content", {"query": "Willowshore elders", "scope": "lore"})
         assert len(mock_pathfinder_search.calls) >= 1
         _, kwargs = mock_pathfinder_search.calls[0]
         cats = kwargs.get("category", [])
@@ -1208,10 +1216,10 @@ class TestChapterScoping:
         assert "deity" in cats
 
     def test_search_lore_includes_place_types(self, mock_pathfinder_search: MockPathfinderSearch):
-        """search_lore should include region, settlement, landmark, historical_event."""
+        """search_content with scope=lore should include region, settlement, landmark, historical_event."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
-        server.call_tool("search_lore", {"query": "Absalom"})
+        server.call_tool("search_content", {"query": "Absalom", "scope": "lore"})
         assert len(mock_pathfinder_search.calls) >= 1
         _, kwargs = mock_pathfinder_search.calls[0]
         cats = kwargs.get("category", [])
@@ -1219,7 +1227,7 @@ class TestChapterScoping:
             assert expected in cats, f"Expected '{expected}' in lore categories"
 
     def test_lookup_creature_filters_irrelevant_families(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_creature should not prepend families whose name doesn't match query words."""
+        """lookup with type=creature should not prepend families whose name doesn't match query words."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         # Configure mock: creature search returns NPC, family search returns irrelevant beetle
         mock_pathfinder_search._search_results = None
@@ -1241,13 +1249,13 @@ class TestChapterScoping:
 
         mock_pathfinder_search.search = mock_search
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_creature", {"name": "Stag Lord"})
+        result = server.call_tool("lookup", {"type": "creature", "name": "Stag Lord"})
         assert result.success is True
         # Beetle should NOT appear because "Beetle" doesn't contain "stag" or "lord"
         assert "Beetle" not in result.data[:200]
 
     def test_lookup_creature_includes_relevant_families(self, mock_pathfinder_search: MockPathfinderSearch):
-        """lookup_creature should prepend families whose name matches query words."""
+        """lookup with type=creature should prepend families whose name matches query words."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         mock_pathfinder_search._search_results = None
         original_search = mock_pathfinder_search.search
@@ -1266,7 +1274,7 @@ class TestChapterScoping:
 
         mock_pathfinder_search.search = mock_search
         server = PF2eRAGServer(db_path="/fake/path")
-        result = server.call_tool("lookup_creature", {"name": "dragon"})
+        result = server.call_tool("lookup", {"type": "creature", "name": "dragon"})
         assert result.success is True
         # Dragon family SHOULD appear because "Dragon" contains "dragon"
         assert "Dragon" in result.data
@@ -1295,11 +1303,11 @@ class TestChapterScoping:
         assert len(mock_pathfinder_search.calls) == 0
 
     def test_tool_count_updated(self, mock_pathfinder_search: MockPathfinderSearch):
-        """PF2eRAGServer should still have the expected number of tools."""
+        """PF2eRAGServer should have the expected number of tools after collapse."""
         from gm_agent.systems.pf2e.servers.pf2e_rag import PF2eRAGServer
         server = PF2eRAGServer(db_path="/fake/path")
         tools = server.list_tools()
-        assert len(tools) == 18  # unchanged — no new tools, just new params
+        assert len(tools) == 9  # get_read_aloud folded into lookup(type="location")
 
 
 class TestAutoDetection:

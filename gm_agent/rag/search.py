@@ -2209,7 +2209,7 @@ class PathfinderSearch:
             book = resolved
         try:
             cursor = self.conn.execute(
-                """SELECT chapter, page_start, page_end, page_count, open_threads
+                """SELECT chapter, page_start, page_end, page_count, open_threads, summary
                    FROM chapter_summaries
                    WHERE book = ?
                    ORDER BY page_start""",

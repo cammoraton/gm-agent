@@ -15,11 +15,16 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import json
 
-from .config import RETRIEVAL_TEMPERATURE, SYNTHESIS_TEMPERATURE
+from .config import (
+    RETRIEVAL_TEMPERATURE,
+    SYNTHESIS_TEMPERATURE,
+    ORCHESTRATOR_REASONING_EFFORT,
+    NARRATOR_REASONING_EFFORT,
+)
 from .mcp.base import ToolDef, ToolResult
 from .mcp.client import MCPClient
 from .models.base import LLMBackend, Message, ToolCall
@@ -41,8 +46,9 @@ def _strip_special_tokens(text: str) -> str:
 
 # Minimum tool calls before the orchestrator is allowed to synthesize.
 # If it tries to synthesize with fewer results, the call is rejected and
-# it's told to keep searching.
-_MIN_TOOLS_BEFORE_SYNTHESIZE = 3
+# it's told to keep searching (unless results are clearly sufficient).
+# 2 is the floor: even simple questions benefit from at least a lookup + rules check.
+_MIN_TOOLS_BEFORE_SYNTHESIZE = 2
 
 # Maximum reflection rounds between tool-gathering passes and synthesis handoff.
 # Set to 0 to disable reflection entirely (model synthesizes after first pass).
@@ -74,44 +80,49 @@ Your job: call tools to gather information, then call `synthesize` to hand off \
 to the narrator. Do NOT answer the question yourself.
 
 Workflow:
-1. Call information-gathering tools (3 calls minimum; 4-5 for deep lore/AP narrative)
+1. Call information-gathering tools (2 calls minimum; 3-4 for deep lore/AP narrative)
 2. Call action tools (dice, encounters) if needed
-3. Call `synthesize` when done
+3. Call `synthesize` when you have sufficient information
 
-ALWAYS call at least 3 tools before synthesize. LOOK UP everything -- your \
-parametric knowledge of PF2e is unreliable. The tools have actual rules text.
+LOOK UP everything -- your parametric knowledge of PF2e is unreliable. \
+The tools have actual rules text. Call synthesize as soon as you have \
+what you need — do NOT make extra calls just to reach a number. \
+If after 2 calls the results fully cover the question, synthesize immediately.
 
-Be FOCUSED. Target 3 well-targeted results before synthesizing. If results \
-are thin, try different queries or tools — avoid redundant calls.
+Be FOCUSED. Target well-targeted results. If results are thin, try different \
+queries or tools — avoid redundant calls.
 
 Tool selection:
-- lookup_creature/lookup_npc/lookup_spell/lookup_item/lookup_hazard: by name
+- lookup(type, name, book?): by name — types: creature, spell, item, location, hazard, npc, encounter
 - search_rules: game mechanics, conditions, actions (rulebooks only)
-- search_content: general search with type/book filters
-- search_lore: world lore, locations, regions, deities, history — does NOT return NPCs or creature ecology/taxonomy
-- search_guidance: GM advice and best practices
+- search_content: general search with type/book filters; scope="lore" for world lore/regions/deities/history; scope="guidance" for GM advice; types="relationship" for NPC-to-NPC relationships; types="faction" for factions/groups and their territory/goals
 - search_pages: raw page text, narrative passages
 - list_entities: inventories ("all NPCs in X", "all creatures", "all deities")
 - browse_book: book/chapter structure and summaries
+- evaluate_encounter(party_level, party_size, creature_levels): calculate encounter difficulty (Trivial/Low/Moderate/Severe/Extreme). ALWAYS call this when asked "is this a fair/hard/balanced fight?", "is X a good challenge for level Y party?", or any encounter difficulty question. creature_levels is a list like [7, 7] for two level-7 creatures.
+- scaffold_creature(level, type, role?, size?, name?): generate a creature stat scaffold — type="creature" (default), "troop" (mob/unit mechanics), or "swarm". Use for goblin mobs, cultist troops, rat swarms, etc.
+- scaffold_hazard(level, type?, ...): generate a hazard scaffold — type="trap" (default) or "haunt"
+- apply_elite_weak(creature_name, adjustment): apply Elite or Weak adjustment to a named creature — adjustment="elite" or "weak". ALWAYS call this when asked to apply Elite/Weak template to a creature, BEFORE searching for the creature stats manually.
 
 Key distinctions:
-- NPCs -> lookup_npc (NOT lookup_creature)
-- Combat monsters/stat blocks → ALWAYS lookup_creature(name="X"). Do NOT use \
+- NPCs → lookup(type="npc") (NOT type="creature")
+- Combat monsters/stat blocks → ALWAYS lookup(type="creature", name="X"). Do NOT use \
 search_content(types="npc") for creature stat blocks — that returns story-character \
 NPCs, not bestiary stat blocks. For a combat scenario involving a will-o'-wisp, \
-boar, or any bestiary creature: lookup_creature("will-o'-wisp"), NOT \
-search_content(types="npc", query="will-o'-wisp"). And do NOT scope creature \
-lookups to a specific AP book (lookup_creature does its own book resolution).
+boar, or any bestiary creature: lookup(type="creature", name="will-o'-wisp"), NOT \
+search_content(types="npc"). And do NOT scope creature \
+lookups to a specific AP book (lookup type=creature does its own book resolution).
 - Major world figures (Tar-Baphon, Iomedae, Aroden, Razmir, etc.) are NPCs/deities — \
-call BOTH lookup_npc(name="X") AND search_lore(query="X"). lookup_npc holds the narrative \
-biography and AP appearance data; search_lore holds the deity/faction entry. Using only \
-one may give an incomplete or misleading picture. Do NOT use lookup_creature — it retrieves \
+call BOTH lookup(type="npc", name="X") AND search_content(scope="lore", query="X"). \
+lookup(type="npc") holds the narrative biography and AP appearance data; \
+search_content(scope="lore") holds the deity/faction entry. Using only \
+one may give an incomplete or misleading picture. Do NOT use type="creature" — it retrieves \
 stat blocks, missing biography and AP context.
-- For "which APs feature X?" or "where does X appear across the game?" → lookup_npc \
-is essential — NPC entries contain AP appearance metadata. search_content and search_lore \
+- For "which APs feature X?" or "where does X appear across the game?" → lookup(type="npc") \
+is essential — NPC entries contain AP appearance metadata. search_content and scope="lore" \
 will NOT return a complete list of AP appearances for a named figure.
-- Creatures -> lookup_creature; NOT in "Player Core" -- use Monster Core, Bestiary, etc.
-- Creature families and dragon taxonomy -> list_entities(type="creature_family", name_filter="X") or search_content(types="creature_family", query="X"). Do NOT use search_lore for creature ecology, dragon lore, or "where do X creatures come from" — search_lore returns geography/history, not creature entries.
+- Creatures → lookup(type="creature"); NOT in "Player Core" — use Monster Core, Bestiary, etc.
+- Creature families and dragon taxonomy → list_entities(type="creature_family", name_filter="X") or search_content(types="creature_family", query="X"). Do NOT use search_content(scope="lore") for creature ecology — it returns geography/history, not creature entries.
 - Enumerating a category ("list all X types", "what kinds of X exist?", "what dragons are in PF2e?") → \
 ALWAYS use list_entities, NOT search_content. The search will return incomplete results. \
 Examples: "list all dragons" → list_entities(type="creature_family", name_filter="dragon"), \
@@ -127,9 +138,24 @@ search_content(query="X", types="settlement") AND search_pages(query="X"). \
 Entity summaries are brief; the actual detail is in page text.
 - For comparison questions ("X vs Y", "debating between X and Y") → search EACH \
 location separately; do not stop if the first one returns no results. Try \
-search_content(types="settlement"), search_lore, and search_pages for each topic.
-- Deities -> search_lore or list_entities(type="deity")
-- Classes -> search WITHOUT book filter (spread across Player Core + Player Core 2)
+search_content(types="settlement") and search_pages for each topic.
+- Deities -> search_content(scope="lore") or list_entities(type="deity")
+- Classes → lookup(type="class", name="X") for the class entry; \
+search_rules(query="X [mechanic]") for specific abilities (e.g., "alchemist quick alchemy", \
+"oracle mystery curse", "thaumaturge exploit vulnerability"). NOT search_content(types="class"). \
+No book filter needed — class data spans Player Core + Player Core 2.
+- NPC relationships / faction dynamics ("how do X and Y relate?", "who controls what?", \
+"what factions are in this dungeon?", "what is the social ecosystem?") → \
+search_content(types="relationship", book="AP Title") AND search_content(types="faction", book="AP Title"). \
+These are per-book entries extracted from AP source material. Always try both types.
+- Boxed text / read-aloud for an AP room → lookup(type="location", name="[area name]", \
+book="AP Title"). Do NOT use search_pages — it returns raw page text, not the formatted \
+read_aloud field. If you don't know the exact room name, use a partial name (e.g., "entrance", \
+"boss chamber") with the book filter; the tool surfaces read_aloud as a blockquote.
+- Influence subsystem (social encounter with discovery phase, success pool, thresholds) → \
+search_rules("influence encounter") or search_content(scope="guidance", query="influence"). \
+Do NOT search "social interaction" — that returns Make an Impression (a basic action), \
+not the structured influence subsystem in the GM Toolkit.
 - NPC inventory — ANY of these phrasings triggers this rule: "who are the NPCs", \
 "key NPCs in", "important characters in", "relationship map of NPCs", "list of \
 characters", "NPC at the start of", "characters in Book X", "who does the party \
@@ -141,7 +167,7 @@ by volume. Kingmaker is a single book (book="Kingmaker"), NOT "Kingmaker Book 1"
 Season of Ghosts has separate volumes ("Season of Ghosts 1 of 4 - The Summer \
 that Never Was", etc.). When unsure, call browse_book(book="AP Name") first.
 - For RELATIONSHIP MAP or DETAILED NPC ANALYSIS questions: list_entities gives \
-you names only. You MUST follow up with lookup_npc for the key characters — \
+you names only. You MUST follow up with lookup(type="npc") for the key characters — \
 the narrator cannot describe relationships or personalities from a name alone. \
 After list_entities returns 20+ names, pick the 5-8 most plot-relevant ones and \
 look them up individually. Then use search_pages(query="[NPC name] relationship \
@@ -190,7 +216,7 @@ learn across the AP?", "what is the central mystery?", "how does X unfold?"):
   (horror, ghosts, curses) not specific mechanics (who the villain is, how the \
   mystery resolves, what the party actually does).
 - For NPC development/arc questions ("how does X change across books?", "X in Book 1 \
-vs Book 2"): lookup_npc(name="X", book="AP: Book 1") THEN lookup_npc(name="X", \
+vs Book 2"): lookup(type="npc", name="X", book="AP: Book 1") THEN lookup(type="npc", name="X", \
 book="AP: Book 2") etc. Character info is stored per-volume — a single lookup misses \
 the arc. Try name variants if needed (e.g., "Granny X" for "Grandmother X").
 
@@ -203,8 +229,8 @@ happens — they are the only reliable source for content assessment.
 - FORBIDDEN: Do NOT use search_pages or search_content with keywords like "body \
 horror", "gore", "blood", "disturbing", "violence" — the DB does not tag content \
 by sensitivity. These searches return nothing useful and waste tool calls.
-- After browse_book, supplement with search_guidance("content sensitivity") or \
-search_guidance("safety tools") for general GM advice on handling difficult content.
+- After browse_book, supplement with search_content(scope="guidance", query="content sensitivity") \
+for general GM advice on handling difficult content.
 
 Remaster questions ("what changed in the remaster?", "what's the remaster equivalent of X?", \
 "list all Y types including remaster changes"):
@@ -248,38 +274,40 @@ book="Player Core") to get the full page text including tables.
 
 NPC lookups:
 - For roleplay requests ("write X's greeting", "roleplay X meeting the party", \
-"voice X's reaction"): use lookup_npc(name="X", book="AP Title") directly. \
-Do NOT use search_content or search_lore — they return the wrong results for \
-creative/roleplay tasks. lookup_npc gives personality, motivation, and voice.
+"voice X's reaction"): use lookup(type="npc", name="X", book="AP Title") directly. \
+Do NOT use search_content — it returns wrong results for creative/roleplay tasks. \
+lookup(type="npc") gives personality, motivation, and voice.
 - For questions about how an NPC will react, their demeanor, or what they would do \
 ("how would X react to Y?", "X's demeanor toward the party", "what should X do?", \
-"how does X change across the AP?") → ALWAYS call lookup_npc(name="X") first. \
+"how does X change across the AP?") → ALWAYS call lookup(type="npc", name="X") first. \
 NPC behavior answers require knowing the NPC's actual personality traits, even when \
 the question is phrased as GM advice rather than a data lookup.
 - For AP-specific NPCs ("the Stag Lord", "Grandmother Hu", "Oleg Leveton"), \
-ALWAYS scope the lookup: lookup_npc(name="X", book="AP Title"). A generic \
+ALWAYS scope the lookup: lookup(type="npc", name="X", book="AP Title"). A generic \
 search_content(types="npc", query="Stag Lord") may return a different entity with \
 the same name from another source. The book= parameter disambiguates.
-- If lookup_npc returns no match or returns only a deity/organization when you \
+- If lookup(type="npc") returns no match or returns only a deity/organization when you \
 searched for a person, try name variants:
   · Remove title prefixes: "Mayor X" → try "X"; "Captain X" → try "X"
   · Nickname forms: "Grandmother X" → try "Granny X"; "Doctor X" → try just "X"
   · Surname only: if full name returns wrong entries, try surname alone
 - NEVER truncate or abbreviate a name with "…" or "..." in a lookup call. \
-Always use the full name: lookup_npc(name="Tar-Baphon") NOT lookup_npc(name="Tar-…"). \
-A truncated name will fail or return a completely wrong entity.
+Always use the full name: lookup(type="npc", name="Tar-Baphon") — a truncated \
+name will fail or return a completely wrong entity.
 - A deity result is NOT an NPC result. If you searched for an NPC and got a deity, \
 the NPC was not found — try variants or note the gap.
 - A MISMATCH is when a result's key attributes directly contradict the character as \
 described in the question (e.g., you searched for a village elder matriarch and got \
 a young male fishmonger). A mismatch means the lookup hit the WRONG entity. \
-When this happens: your NEXT call MUST be lookup_npc with an alternate name form \
+When this happens: your NEXT call MUST be lookup(type="npc") with an alternate name form \
 (nickname, shortened name, just surname). Do NOT fall back to search_content — \
-that will return a pile of unrelated matches. lookup_npc with a variant is the fix.
+that will return a pile of unrelated matches. lookup(type="npc") with a variant is the fix.
 
 Use natural type names for search_content (e.g. "creature", "npc", "spell", "feat", \
-"condition", "hazard", "settlement", "deity") — the tool maps synonyms automatically. \
-For NPC searches use search_content(types="npc", ...) or lookup_npc.
+"condition", "hazard", "settlement", "deity") — the tool maps synonyms automatically.
+INVALID types (silently removed, return zero results): "event", "adventure", "book", \
+"article", "chapter", "other". For festival/ceremony/narrative event content: use \
+search_content without types filter, or types="npc" for organizers/participants.
 
 Rules adjudication ("can X do Y?"):
 - Look up EACH ability/action mentioned separately
@@ -342,6 +370,7 @@ class RetrievalResult:
     tool_calls: list[tuple[str, dict, str]]  # (name, args, result_text)
     duration_ms: float
     model: str
+    thinking: list[str] = field(default_factory=list)  # per-iteration reasoning traces
 
 
 @dataclass
@@ -353,6 +382,7 @@ class SplitResult:
     synthesis_model: str
     total_duration_ms: float
     reflection_rounds_used: int = 0
+    synthesis_thinking: str | None = None  # narrator reasoning trace
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +460,7 @@ class SplitPipeline:
             print(f"\n[Orchestrator] {n} tool call(s) in {orchestration.duration_ms:.0f}ms{reflect_str}")
 
         # Phase 2: Narration (toolless)
-        response = self._narrate(
+        response, synthesis_thinking = self._narrate(
             query,
             all_retrievals,
             conversation_history,
@@ -444,6 +474,7 @@ class SplitPipeline:
             synthesis_model=self.synthesis_llm.get_model_name(),
             total_duration_ms=total_ms,
             reflection_rounds_used=reflection_rounds_used,
+            synthesis_thinking=synthesis_thinking,
         )
 
     # ------------------------------------------------------------------
@@ -477,6 +508,7 @@ class SplitPipeline:
 
         results: list[tuple[str, dict, str]] = []
         seen_calls: set[str] = set()
+        thinking_traces: list[str] = []
         reflection_rounds_used = 0
 
         # Outer loop: each iteration is one research pass (possibly after a reflection).
@@ -493,12 +525,16 @@ class SplitPipeline:
                         messages,
                         tools=tools,
                         temperature=RETRIEVAL_TEMPERATURE,
+                        thinking={"effort": ORCHESTRATOR_REASONING_EFFORT} if ORCHESTRATOR_REASONING_EFFORT else None,
                     )
                 except Exception as exc:
                     # Handle malformed tool calls (e.g. None id/name from small models)
                     if self.verbose:
                         print(f"  [Error] Orchestrator LLM error: {exc}")
                     response = None
+
+                if response is not None and response.thinking:
+                    thinking_traces.append(response.thinking)
 
                 if response is None or not response.tool_calls:
                     if reflection_round == 0 and iteration == 0 and not results:
@@ -519,9 +555,10 @@ class SplitPipeline:
                         messages.append(Message(
                             role="user",
                             content=(
-                                "You have only made {n} tool call(s). "
-                                "Search for more information before handing off. "
-                                "Try different queries or tools."
+                                "You have made {n} tool call(s). If you already have "
+                                "sufficient information to answer the question fully, "
+                                "call synthesize. Otherwise, make 1-2 more targeted "
+                                "searches with different queries or tool types."
                             ).format(n=len(results)),
                         ))
                         continue
@@ -547,11 +584,11 @@ class SplitPipeline:
                             messages.append(Message(
                                 role="tool",
                                 content=(
-                                    "Not enough reference material gathered yet "
-                                    "({n} tool call(s) so far). Keep researching — "
-                                    "look up specific entities, rules, or locations "
-                                    "relevant to the question. Try different queries "
-                                    "or tools if initial results were thin."
+                                    "Only {n} tool call(s) so far. If you have "
+                                    "enough to answer the question, call synthesize. "
+                                    "If not, make 1-2 more targeted searches — look up "
+                                    "specific entities, rules, or locations. Try a "
+                                    "different tool type if initial results were thin."
                                 ).format(n=len(results)),
                                 tool_call_id=tc.id,
                             ))
@@ -589,7 +626,7 @@ class SplitPipeline:
                                 content=(
                                     "You have only called browse_book ({n} time(s)) and no specific "
                                     "content tools. Before synthesizing, call search_pages(query='[key "
-                                    "term from summaries]', book='...') or lookup_npc/lookup_creature "
+                                    "term from summaries]', book='...') or lookup(type='npc')/lookup(type='creature') "
                                     "to fetch actual plot/NPC/encounter content. "
                                     "browse_book gives chapter titles and themes only — "
                                     "it cannot answer questions about specific NPCs, plot events, "
@@ -664,11 +701,18 @@ class SplitPipeline:
             ))
         # end outer loop
 
+        # Auto-supplement: encounter-building queries need level-appropriate creatures.
+        # If the orchestrator searched for creatures but never filtered by level, inject
+        # a list_entities call so the narrator has grounded options to work from.
+        self._supplement_encounter_creatures(query, results)
+        self._supplement_npc_list(query, results)
+
         duration_ms = (time.time() - t0) * 1000
         return RetrievalResult(
             tool_calls=results,
             duration_ms=duration_ms,
             model=self.retrieval_llm.get_model_name(),
+            thinking=thinking_traces,
         ), reflection_rounds_used
 
     # ------------------------------------------------------------------
@@ -681,11 +725,11 @@ class SplitPipeline:
         retrievals: list[RetrievalResult],
         conversation_history: list[Message] | None,
         extra_context: str,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Phase 2: Toolless grounded response generation.
 
         Returns:
-            The narrator's response text.
+            (response_text, thinking_trace_or_None)
         """
         context_text = self._format_all_retrievals(retrievals)
 
@@ -703,11 +747,15 @@ class SplitPipeline:
             user_content = f"{extra_context}\n\n{user_content}"
         messages.append(Message(role="user", content=user_content))
 
+        _narrator_thinking_param = {"effort": NARRATOR_REASONING_EFFORT} if NARRATOR_REASONING_EFFORT else None
         response = self.synthesis_llm.chat(
             messages,
             tools=None,
             temperature=SYNTHESIS_TEMPERATURE,
+            thinking=_narrator_thinking_param,
         )
+
+        synthesis_thinking = response.thinking
 
         # Strip Ollama special tokens (<|start|>, <|channel|>, <|call|>, etc.)
         # that leak into output when the synthesis model confuses itself with the
@@ -728,17 +776,130 @@ class SplitPipeline:
             ))
             response = self.synthesis_llm.chat(
                 messages, tools=None, temperature=SYNTHESIS_TEMPERATURE,
+                thinking=_narrator_thinking_param,
             )
             cleaned_text = _strip_special_tokens(response.text)
+            if response.thinking:
+                synthesis_thinking = response.thinking
 
         # Hard fallback
         if not cleaned_text:
             context_text = self._format_all_retrievals(retrievals)
             if context_text:
-                return "Here's what I found from the database:\n\n" + context_text
-            return "I wasn't able to formulate a response. Please try rephrasing your question."
+                return "Here's what I found from the database:\n\n" + context_text, synthesis_thinking
+            return "I wasn't able to formulate a response. Please try rephrasing your question.", synthesis_thinking
 
-        return cleaned_text
+        return cleaned_text, synthesis_thinking
+
+    # ------------------------------------------------------------------
+    # Auto-supplement helpers
+    # ------------------------------------------------------------------
+
+    _ENCOUNTER_RE = re.compile(r"\bencounter\b", re.IGNORECASE)
+    _LEVEL_RE = re.compile(r"\blevel[s]?\s+(\d+)\b", re.IGNORECASE)
+    _PARTY_SIZE_RE = re.compile(r"\b(\d+)\s+(?:level|player|character|pc)\b", re.IGNORECASE)
+    _NPC_LIST_RE = re.compile(
+        r"\b(?:relationship\s+map|npc\s+web|who(?:'s|\s+are)\s+(?:the\s+)?(?:key\s+)?npcs?|"
+        r"all\s+(?:the\s+)?npcs?|community\s+(?:map|dynamics)|list\s+(?:all\s+)?npcs?)\b",
+        re.IGNORECASE,
+    )
+
+    def _supplement_encounter_creatures(
+        self,
+        query: str,
+        results: list[tuple[str, dict, str]],
+    ) -> None:
+        """Inject suggest_encounter + level-filtered creature list if the orchestrator missed them.
+
+        Only fires when:
+        - The query is an encounter-building request (contains "encounter")
+        - The query mentions a party level
+        - suggest_encounter was not already called
+        """
+        if not self._ENCOUNTER_RE.search(query):
+            return
+        m = self._LEVEL_RE.search(query)
+        if not m:
+            return
+        level = int(m.group(1))
+
+        # Check what the orchestrator already called
+        called = {name for name, _args, _text in results}
+        has_level_filter = any(
+            "min_level" in args or "max_level" in args
+            for _name, args, _text in results
+        )
+
+        # Determine book context from existing tool calls (used for both supplements)
+        book = next(
+            (args["book"] for _name, args, _text in results if args.get("book")),
+            None,
+        )
+
+        # Inject suggest_encounter if not already called — gives XP budget + creature roster
+        if "suggest_encounter" not in called:
+            ps_m = self._PARTY_SIZE_RE.search(query)
+            party_size = int(ps_m.group(1)) if ps_m else 4
+            suggest_args: dict = {"party_level": level, "party_size": party_size, "target_threat": "moderate"}
+            if book:
+                suggest_args["book"] = book
+            if self.verbose:
+                print(f"  [Supplement] Injecting suggest_encounter(level={level}, size={party_size}, book={book!r})")
+            tool_result = self.mcp.call_tool("suggest_encounter", suggest_args)
+            results.append(("suggest_encounter", suggest_args, tool_result.to_string()))
+
+        # Inject level-filtered creature list if not already present
+        if not has_level_filter:
+            list_args: dict = {
+                "type": "creature",
+                "min_level": level - 1,
+                "max_level": level + 2,
+                "limit": 20,
+            }
+            if book:
+                list_args["book"] = book
+            if self.verbose:
+                print(f"  [Supplement] Injecting level {level-1}–{level+2} creature list")
+            tool_result = self.mcp.call_tool("list_entities", list_args)
+            results.append(("list_entities", list_args, tool_result.to_string()))
+
+    def _supplement_npc_list(
+        self,
+        query: str,
+        results: list[tuple[str, dict, str]],
+    ) -> None:
+        """Inject list_entities(type="npc") for relationship-map / NPC-inventory queries.
+
+        The orchestrator tends to call search_content repeatedly for these queries
+        instead of doing a bulk NPC list, which leaves large parts of the community
+        invisible to the narrator.  Only fires when:
+        - The query looks like a relationship map or NPC inventory request
+        - No list_entities(type="npc") was already called
+        - A book can be inferred from existing results or the query
+        """
+        if not self._NPC_LIST_RE.search(query):
+            return
+
+        # Skip if orchestrator already fetched an NPC list
+        already_listed = any(
+            name == "list_entities" and args.get("type") == "npc"
+            for name, args, _text in results
+        )
+        if already_listed:
+            return
+
+        # Infer book from existing tool results or from the query itself
+        book = next(
+            (args["book"] for _name, args, _text in results if args.get("book")),
+            None,
+        )
+        list_args: dict = {"type": "npc", "limit": 40}
+        if book:
+            list_args["book"] = book
+        if self.verbose:
+            print(f"  [Supplement] Injecting NPC list (book={book!r})")
+        tool_result = self.mcp.call_tool("list_entities", list_args)
+        results.append(("list_entities", list_args, tool_result.to_string()))
 
     # ------------------------------------------------------------------
     # Formatting helpers

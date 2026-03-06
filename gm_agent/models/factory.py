@@ -3,7 +3,9 @@
 from typing import Type
 
 from ..config import (
+    CHAT_BACKEND,
     LLM_BACKEND,
+    NARRATOR_BACKEND,
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
@@ -97,6 +99,29 @@ def get_retrieval_backend() -> LLMBackend:
     if name == "openrouter" and not model:
         model = OPENROUTER_MODEL
     return _get_backend_with_model(name, model)
+
+
+def parse_backend_spec(spec: str) -> LLMBackend:
+    """Create a backend from a spec string.
+
+    Accepts "backend" or "backend:model" (e.g. "openrouter:openai/gpt-oss-20b").
+    """
+    if ":" not in spec:
+        return get_backend(spec)
+    backend_name, model = spec.split(":", 1)
+    return _get_backend_with_model(backend_name, model)
+
+
+def get_chat_backend() -> LLMBackend:
+    """Get the default orchestrator backend for chat mode (tool calls)."""
+    return parse_backend_spec(CHAT_BACKEND)
+
+
+def get_narrator_backend() -> LLMBackend | None:
+    """Get the narrator backend for chat mode synthesis, or None to share with orchestrator."""
+    if not NARRATOR_BACKEND:
+        return None
+    return parse_backend_spec(NARRATOR_BACKEND)
 
 
 def list_backends() -> list[str]:

@@ -183,10 +183,10 @@ class TestDiceServer:
 
         assert "roll_dice" in tool_names
         assert "roll_multiple" in tool_names
-        assert "roll_fortune" in tool_names
-        assert "roll_misfortune" in tool_names
         assert "check_result" in tool_names
         assert "roll_check" in tool_names
+        assert "roll_fortune" not in tool_names
+        assert "roll_misfortune" not in tool_names
 
     def test_roll_dice_tool(self, server):
         """Should roll dice via tool call."""
@@ -203,20 +203,6 @@ class TestDiceServer:
         assert result.success
         assert len(result.data["rolls"]) == 2
         assert "grand_total" in result.data
-
-    def test_roll_fortune_tool(self, server):
-        """Should roll with fortune."""
-        result = server.call_tool("roll_fortune", {"expression": "1d20"})
-
-        assert result.success
-        assert result.data["type"] == "fortune"
-
-    def test_roll_misfortune_tool(self, server):
-        """Should roll with misfortune."""
-        result = server.call_tool("roll_misfortune", {"expression": "1d20"})
-
-        assert result.success
-        assert result.data["type"] == "misfortune"
 
     def test_check_result_tool(self, server):
         """Should check result against DC."""

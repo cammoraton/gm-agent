@@ -118,8 +118,13 @@ class OpenAIBackend(LLMBackend):
                 if openai_tools:
                     kwargs["tools"] = openai_tools
                 if thinking:
-                    # OpenRouter passes provider-specific params via extra_body
-                    kwargs["extra_body"] = {"thinking": thinking}
+                    # OpenRouter passes provider-specific params via extra_body.
+                    # {"effort": "high/medium/low"} targets OpenAI/gpt-oss reasoning effort;
+                    # anything else is treated as Anthropic-style thinking config.
+                    if "effort" in thinking:
+                        kwargs["extra_body"] = {"reasoning": thinking}
+                    else:
+                        kwargs["extra_body"] = {"thinking": thinking}
                 if temperature is not None:
                     kwargs["temperature"] = temperature
 
@@ -185,13 +190,17 @@ class OpenAIBackend(LLMBackend):
         message = choice.message
         content = message.content or ""
 
-        # Extract reasoning/thinking content if present
-        # OpenRouter returns this for models that support reasoning
-        # (Anthropic models, DeepSeek R1, o1/o3, etc.)
+        # Extract reasoning/thinking content if present.
+        # OpenRouter uses "reasoning"; DeepSeek uses "reasoning_content".
+        # Fall back to model_extra for forward-compatibility.
         thinking_text = None
-        reasoning = getattr(message, "reasoning_content", None)
-        if isinstance(reasoning, str) and reasoning:
-            thinking_text = reasoning
+        for field in ("reasoning", "reasoning_content"):
+            val = getattr(message, field, None)
+            if val is None:
+                val = (getattr(message, "model_extra", None) or {}).get(field)
+            if isinstance(val, str) and val:
+                thinking_text = val
+                break
 
         # Parse tool calls if present
         tool_calls = []

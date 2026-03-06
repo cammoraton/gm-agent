@@ -730,7 +730,7 @@ class TestChatCommand:
 
             cli_runner.invoke(cli, ["chat", "-v"], input="/quit\n")
 
-        mock_agent_class.assert_called_once_with(llm=None, verbose=True)
+        mock_agent_class.assert_called_once_with(llm=None, narrator_llm=None, verbose=True)
 
     def test_chat_error_handling(self, cli_runner: CliRunner):
         """Chat should handle errors gracefully."""

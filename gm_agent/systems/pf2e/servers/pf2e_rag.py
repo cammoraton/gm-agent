@@ -1,6 +1,9 @@
 """PF2e RAG MCP server wrapping PathfinderSearch."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from gm_agent.config import RAG_DB_PATH
 from gm_agent.rag import PathfinderSearch
@@ -19,46 +22,36 @@ class PF2eRAGServer(MCPServer):
         """Build the tool definitions."""
         return [
             ToolDef(
-                name="lookup_creature",
-                description="Look up a specific creature/monster by name. Returns detailed stats and abilities.",
+                name="lookup",
+                description=(
+                    "Look up a named entity and return its full description. "
+                    "type must be one of: creature, spell, item, location, hazard, npc, encounter, class. "
+                    "npc vs creature: named characters (villains, allies, quest-givers) → npc. "
+                    "Generic monsters (goblin warrior, red dragon) → creature. "
+                    "The boundary is fuzzy — npc merges creature stat blocks automatically. "
+                    "type=location returns encounter room descriptions and read-aloud/boxed text — "
+                    "ALWAYS specify book= for dungeon locations to avoid cross-AP matches. "
+                    "type=class returns a class entry (key ability, roles, overview). "
+                    "For specific class mechanics use search_rules(query='classname ability'). "
+                    "book= scopes npc, location, and encounter searches to a specific AP or sourcebook."
+                ),
                 parameters=[
                     ToolParameter(
-                        name="name",
+                        name="type",
                         type="string",
-                        description="The creature name to look up (e.g., 'goblin', 'red dragon')",
+                        description="Entity type: creature, spell, item, location, hazard, npc, encounter, class",
                     ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_spell",
-                description="Look up a specific spell, cantrip, or focus spell by name.",
-                parameters=[
                     ToolParameter(
                         name="name",
                         type="string",
-                        description="The spell name to look up (e.g., 'fireball', 'shield')",
+                        description="The entity name or search term (e.g., 'goblin', 'fireball', 'Nyrissa', 'A1')",
                     ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_item",
-                description="Look up a specific item or piece of equipment by name.",
-                parameters=[
                     ToolParameter(
-                        name="name",
+                        name="book",
                         type="string",
-                        description="The item name to look up (e.g., 'longsword', 'healing potion')",
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_location",
-                description="Look up a location, city, nation, or place in Golarion by name. Returns lore and setting information.",
-                parameters=[
-                    ToolParameter(
-                        name="name",
-                        type="string",
-                        description="The location name to look up (e.g., 'Absalom', 'Cheliax', 'Sandpoint')",
+                        description="Optional: scope to a specific book or AP (e.g., 'Kingmaker', 'Abomination Vaults')",
+                        required=False,
+                        default=None,
                     ),
                 ],
             ),
@@ -145,132 +138,22 @@ class PF2eRAGServer(MCPServer):
                         default=None,
                     ),
                     ToolParameter(
+                        name="scope",
+                        type="string",
+                        description=(
+                            "Shortcut scope filter. 'lore': world lore, locations, deities, regions, "
+                            "organizations, history (use for setting/Golarion questions). "
+                            "'guidance': GM advice and tips on running the game."
+                        ),
+                        required=False,
+                        default=None,
+                    ),
+                    ToolParameter(
                         name="limit",
                         type="integer",
                         description="Maximum number of results",
                         required=False,
                         default=10,
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="search_lore",
-                description="Search for world lore, setting information, locations, regions, deities, history, nations, and organizations in Golarion. Use this for questions about places, cultures, deities, or world history. NOT for NPCs (use lookup_npc or list_entities instead). Accepts optional book filter.",
-                parameters=[
-                    ToolParameter(
-                        name="query",
-                        type="string",
-                        description="The lore query (e.g., 'Absalom', 'Cheliax', 'Aroden', 'Inner Sea')",
-                    ),
-                    ToolParameter(
-                        name="book",
-                        type="string",
-                        description="Filter to a specific book (e.g., 'Season of Ghosts', 'Absalom'). Supports fuzzy matching.",
-                        required=False,
-                        default=None,
-                    ),
-                    ToolParameter(
-                        name="chapter",
-                        type="string",
-                        description="Filter to a specific chapter within a book (requires book).",
-                        required=False,
-                        default=None,
-                    ),
-                    ToolParameter(
-                        name="limit",
-                        type="integer",
-                        description="Maximum number of results",
-                        required=False,
-                        default=5,
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_hazard",
-                description="Look up a specific hazard or haunt by name. Returns disabling information and stats.",
-                parameters=[
-                    ToolParameter(
-                        name="name",
-                        type="string",
-                        description="The hazard name to look up (e.g., 'poison dart trap', 'poltergeist')",
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_encounter",
-                description="Look up an encounter area by code (A1, B3) or name. Returns room description, creatures, hazards, and read-aloud text. When running an adventure path, pass the book name to scope results.",
-                parameters=[
-                    ToolParameter(
-                        name="query",
-                        type="string",
-                        description="Area code (e.g., 'A1', 'B3') or location name",
-                    ),
-                    ToolParameter(
-                        name="book",
-                        type="string",
-                        description="Adventure path or book name to scope results (e.g., 'Abomination Vaults')",
-                        required=False,
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="lookup_npc",
-                description="Look up an NPC by name. Returns combined roleplay info, stat block, and narrative context by merging NPC, creature, and page text entries. Automatically tries name variants (e.g., 'Granny' for 'Grandmother') if the exact name isn't found.",
-                parameters=[
-                    ToolParameter(
-                        name="name",
-                        type="string",
-                        description="The NPC name to look up (e.g., 'Nyrissa', 'Oleg Leveton', 'The Stag Lord', 'Granny Hu')",
-                    ),
-                    ToolParameter(
-                        name="book",
-                        type="string",
-                        description="Optional: scope search to a specific book or AP (e.g., 'Season of Ghosts', 'Kingmaker')",
-                        required=False,
-                        default=None,
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="search_guidance",
-                description="Search for GM advice, tips on running the game, and how-to-run guidance for creatures, encounters, or situations.",
-                parameters=[
-                    ToolParameter(
-                        name="query",
-                        type="string",
-                        description="Topic to get guidance on (e.g., 'running goblins', 'chase scenes', 'social encounters')",
-                    ),
-                    ToolParameter(
-                        name="book",
-                        type="string",
-                        description="Filter to a specific book (e.g., 'GM Core', 'Kingmaker'). Supports fuzzy matching.",
-                        required=False,
-                        default=None,
-                    ),
-                    ToolParameter(
-                        name="chapter",
-                        type="string",
-                        description="Filter to a specific chapter within a book (requires book).",
-                        required=False,
-                        default=None,
-                    ),
-                    ToolParameter(
-                        name="limit",
-                        type="integer",
-                        description="Maximum number of results",
-                        required=False,
-                        default=5,
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="get_read_aloud",
-                description="Get read-aloud/boxed text for a location or encounter area. Use this to find descriptive text to read to players.",
-                parameters=[
-                    ToolParameter(
-                        name="location",
-                        type="string",
-                        description="Location name or area code (e.g., 'A1', 'mine entrance')",
                     ),
                 ],
             ),
@@ -475,18 +358,77 @@ class PF2eRAGServer(MCPServer):
             if "book" in args and isinstance(args["book"], str):
                 _book_val = args["book"].replace("\xa0", " ").replace("…", "").strip()
                 args = {**args, "book": _book_val}
+            if "name" in args and isinstance(args["name"], str):
+                _name_val = args["name"].replace("\xa0", " ").replace("…", "").replace("...", "").strip()
+                args = {**args, "name": _name_val}
 
-            if name == "lookup_creature":
-                return self._lookup_creature(args["name"])
-            elif name == "lookup_spell":
-                return self._lookup_spell(args["name"])
-            elif name == "lookup_item":
-                return self._lookup_item(args["name"])
-            elif name == "lookup_location":
-                return self._lookup_location(args["name"])
+            if name == "lookup":
+                _type = (args.get("type") or "").lower().strip()
+                _name = args.get("name") or args.get("query", "")
+                _book = args.get("book")
+                if _type == "creature":
+                    return self._lookup_creature(_name)
+                elif _type == "spell":
+                    return self._lookup_spell(_name)
+                elif _type == "item":
+                    return self._lookup_item(_name)
+                elif _type == "location":
+                    return self._lookup_location(_name, book=_book)
+                elif _type == "hazard":
+                    return self._lookup_hazard(_name)
+                elif _type == "npc":
+                    return self._lookup_npc(_name, book=_book)
+                elif _type == "encounter":
+                    return self._lookup_encounter(_name, _book)
+                elif _type == "class":
+                    return self._lookup_class(_name)
+                else:
+                    # creature_family is a valid list_entities type but not a lookup type —
+                    # redirect rather than returning an error or doing a generic search.
+                    if _type == "creature_family":
+                        return self._list_entities("creature_family", None, _name or None, 20)
+                    # Unknown type — fall back to general content search rather than
+                    # returning an error that wastes a turn and derails the agent.
+                    logger.debug(
+                        "lookup: unknown type %r — falling back to search_content(%r)", _type, _name
+                    )
+                    return self._search_content(
+                        query=_name, types=None, book=_book, limit=5,
+                    )
             elif name == "search_rules":
                 return self._search_rules(args["query"], args.get("limit", 5))
             elif name == "search_content":
+                # Missing query + book/chapter → redirect to browse_book rather than erroring
+                if not args.get("query") and not args.get("scope"):
+                    _bq = args.get("book")
+                    _cq = args.get("chapter")
+                    if _bq or _cq:
+                        return self._browse_book(_bq, _cq, args.get("book_type"))
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            "search_content requires a 'query' parameter. "
+                            "To browse a book's structure, use browse_book(book=..., chapter=...) instead."
+                        ),
+                    )
+                # scope shortcut: 'lore' or 'guidance' redirect to specialized search
+                # BUT only when types is not also specified — types is more specific and wins.
+                _scope = (args.get("scope") or "").lower().strip()
+                _scope_types_arg = args.get("types")
+                if _scope and _scope_types_arg:
+                    # scope + types are contradictory; types is explicit so ignore scope
+                    _scope = ""
+                if _scope == "lore":
+                    return self._search_lore(
+                        args["query"], args.get("limit", 5),
+                        book=args.get("book"), chapter=args.get("chapter"),
+                    )
+                elif _scope == "guidance":
+                    return self._search_guidance(
+                        args["query"], args.get("limit", 5),
+                        book=args.get("book"), chapter=args.get("chapter"),
+                    )
+
                 types = args.get("types")
                 # Redirect search_content(types="book") → browse_book.
                 # The model uses this when it wants a book/sourcebook listing.
@@ -536,7 +478,7 @@ class PF2eRAGServer(MCPServer):
                         if (
                             _hit.success
                             and _hit.data
-                            and not _hit.data.startswith("No NPC found")
+                            and not _hit.data.startswith(("No NPC found", "No NPC entity found"))
                         ):
                             return _hit
                         # lookup_npc failed (likely a place/concept name, not a person).
@@ -565,6 +507,45 @@ class PF2eRAGServer(MCPServer):
                     level=args.get("level"), level_range=level_range, traits=traits,
                     remaster_only=remaster_only, chapter=args.get("chapter"),
                 )
+
+                # Relationship/faction supplement: when the query signals social
+                # dynamics and the caller didn't already request relationship/faction
+                # types, automatically append any matching entries. This removes
+                # dependence on the model remembering to use these types explicitly.
+                _rel_signals = {
+                    "relationship", "relation", "faction", "ally", "allies",
+                    "rival", "enemy", "enemies", "conflict", "alliance",
+                    "social", "politics", "power", "tension", "connected",
+                    "dynamic", "map", "ecosystem", "who controls",
+                }
+                _requested_types = set(types or [])
+                _already_has_rel = bool(
+                    _requested_types & {"relationship", "faction"}
+                )
+                _query_words = set((args.get("query") or "").lower().split())
+                if (
+                    not _already_has_rel
+                    and _query_words & _rel_signals
+                    and args.get("book")
+                ):
+                    _book_for_rel = args["book"]
+                    _rel_result = self._search_content(
+                        args["query"], ["relationship"], _book_for_rel, 5,
+                    )
+                    _fac_result = self._search_content(
+                        args["query"], ["faction"], _book_for_rel, 5,
+                    )
+                    _supplements = []
+                    if _rel_result.success and _rel_result.data and "No results" not in _rel_result.data:
+                        _supplements.append("**NPC Relationships:**\n" + _rel_result.data)
+                    if _fac_result.success and _fac_result.data and "No results" not in _fac_result.data:
+                        _supplements.append("**Factions:**\n" + _fac_result.data)
+                    if _supplements and result.success:
+                        result = ToolResult(
+                            success=True,
+                            data=(result.data or "") + "\n\n" + "\n\n".join(_supplements),
+                        )
+
                 # Warn about invalid types that were silently dropped.
                 if _invalid_used and result.success and result.data:
                     bad = ", ".join(f"'{t}'" for t in _invalid_used)
@@ -577,17 +558,6 @@ class PF2eRAGServer(MCPServer):
                         ),
                     )
                 return result
-            elif name == "search_lore":
-                return self._search_lore(
-                    args["query"], args.get("limit", 5),
-                    book=args.get("book"), chapter=args.get("chapter"),
-                )
-            elif name == "lookup_hazard":
-                return self._lookup_hazard(args["name"])
-            elif name == "lookup_encounter":
-                return self._lookup_encounter(args["query"], args.get("book"))
-            elif name == "lookup_npc":
-                return self._lookup_npc(args["name"], book=args.get("book"))
             elif name == "search_book":
                 # Hallucinated tool — redirect to browse_book.
                 _book_query = args.get("book") or args.get("query", "")
@@ -608,13 +578,9 @@ class PF2eRAGServer(MCPServer):
                 # Hallucinated tool — redirect to rules search
                 query = args.get("name") or args.get("query", "")
                 return self._search_rules(query, args.get("limit", 5))
-            elif name == "search_guidance":
-                return self._search_guidance(
-                    args["query"], args.get("limit", 5),
-                    book=args.get("book"), chapter=args.get("chapter"),
-                )
             elif name == "get_read_aloud":
-                return self._get_read_aloud(args["location"])
+                # Redirect to lookup(type="location") with book scoping
+                return self._lookup_location(args.get("location", ""), book=args.get("book"))
             elif name == "search_pages":
                 return self._search_pages(
                     args["query"], args.get("book"), args.get("limit", 5),
@@ -695,6 +661,46 @@ class PF2eRAGServer(MCPServer):
             return ToolResult(success=True, data=f"No creature found matching '{name}'")
 
         return ToolResult(success=True, data=self._format_results(results))
+
+    # Canonical rulebooks that contain class chapters (checked in order)
+    _CLASS_BOOKS = (
+        "Player Core 2",
+        "Player Core",
+        "Secrets of Magic",
+        "Dark Archive",
+        "Guns & Gears",
+        "Rage of Elements",
+        "War of Immortals",
+        "Battlecry!",
+    )
+
+    def _lookup_class(self, name: str) -> ToolResult:
+        """Look up a class by name, supplementing thin entity entries with page text."""
+        results = self.search.search(name, doc_type="class", top_k=5)
+        if not results:
+            results = self.search.search(name, category="class", top_k=5)
+
+        parts: list[str] = []
+        if results:
+            parts.append(self._format_results(results))
+
+        # Always supplement with page text — class entity entries are often thin
+        # (e.g. Thaumaturge only has the Shield Implement section in Battlecry!)
+        page_results = self.search.search_pages(name, top_k=3)
+        # Keep only pages from canonical class books
+        page_results = [
+            p for p in page_results
+            if any(b in p.get("book", "") for b in self._CLASS_BOOKS)
+        ]
+        if page_results:
+            parts.append(self._format_page_results(page_results))
+
+        if not parts:
+            return ToolResult(
+                success=True,
+                data=f"No class entry found for '{name}'. Try search_rules for specific mechanics.",
+            )
+        return ToolResult(success=True, data="\n\n---\n\n".join(parts))
 
     # Known PF2e remaster spell renames (legacy → remaster).
     # Used as fallback when a spell can't be found under its pre-remaster name.
@@ -787,18 +793,97 @@ class PF2eRAGServer(MCPServer):
 
         return ToolResult(success=True, data=self._format_results(results))
 
-    def _lookup_location(self, name: str) -> ToolResult:
-        """Look up a specific location by name."""
+    def _lookup_location(self, name: str, book: str | None = None) -> ToolResult:
+        """Look up a specific location by name, optionally scoped to a book."""
         results = self.search.search(
             name,
             category="location",
+            book=book,
             top_k=5,
         )
 
+        if not results and book:
+            # Fall back to unscoped search if book-scoped returns nothing
+            results = self.search.search(name, category="location", top_k=5)
+
         if not results:
+            # Last resort: word-split name_filter to surface locations whose name
+            # contains a query word — catches "Gauntlight entrance" → "Damp Entrance"
+            # when the agent knows the concept but not the room's proper name.
+            if book:
+                candidates = []
+                seen_ids: set = set()
+                for word in name.lower().split():
+                    if len(word) >= 4:
+                        matches = self.search.list_entities(
+                            include_types=["location"],
+                            book=book,
+                            name_filter=word,
+                            limit=10,
+                        )
+                        for m in matches:
+                            if m.get("id") not in seen_ids:
+                                seen_ids.add(m.get("id"))
+                                candidates.append(m)
+                if candidates:
+                    # Show matches prominently — agent can pick the right one and retry
+                    hint_names = ", ".join(
+                        f'"{c["name"]}" (p.{c["page"]})' if c.get("page") else f'"{c["name"]}"'
+                        for c in candidates[:10]
+                    )
+                    return ToolResult(
+                        success=True,
+                        data=(
+                            f"No location named '{name}' found. "
+                            f"Locations in this book matching parts of that name: {hint_names}. "
+                            f"Retry lookup with the exact name, e.g. lookup(type='location', name='{candidates[0]['name']}')."
+                        ),
+                    )
             return ToolResult(success=True, data=f"No location found matching '{name}'")
 
-        return ToolResult(success=True, data=self._format_results(results))
+        # Always supplement with a name-filter pass to surface locations whose name
+        # contains a query word but whose content text doesn't contain other query words.
+        # Example: "Gauntlight Entrance" → FTS finds "Security Checkpoint" (has both words
+        # in content) but misses "Damp Entrance" (only "Entrance" in name, not "Gauntlight").
+        # Name-filter catches it regardless of the FTS mix.
+        if book:
+            existing_ids = {r.get("id") for r in results}
+            name_extras = []
+            for word in name.lower().split():
+                if len(word) >= 4:
+                    extras = self.search.list_entities(
+                        include_types=["location"],
+                        book=book,
+                        name_filter=word,
+                        limit=10,
+                    )
+                    for e in extras:
+                        if e.get("id") not in existing_ids:
+                            existing_ids.add(e.get("id"))
+                            name_extras.append(e)
+            if name_extras:
+                # Prepend name-matched extras — they're likely more relevant
+                # than FTS semantic matches when searching by location name
+                results = name_extras + results
+
+        # Format results, surfacing read_aloud prominently as boxed text
+        lines = []
+        for r in results:
+            page_info = f", p.{r['page']}" if r.get("page") else ""
+            header = f"**{r['name']}** (location) - {r.get('book', '')}{page_info}"
+            md = r.get("metadata", {})
+            read_aloud = md.get("read_aloud", "")
+            content = r.get("content", "")
+            if len(content) > 1500:
+                content = content[:1500] + "..."
+            entry = header
+            if read_aloud:
+                entry += f"\n\n*Read-aloud text:*\n> {read_aloud}"
+            if content:
+                entry += f"\n\n{content}"
+            lines.append(entry)
+
+        return ToolResult(success=True, data=f"[{len(results)} results]\n\n" + "\n\n---\n\n".join(lines))
 
     # Core rulebooks that should be authoritative for rules text.
     _CORE_RULEBOOKS = frozenset({
@@ -1068,6 +1153,16 @@ class PF2eRAGServer(MCPServer):
 
         results = self.search.search(query, **kwargs)
 
+        # Relationship/faction FTS often fails because content format (members/goals/territory)
+        # doesn't match natural-language queries well. Fall back to list_entities (direct SQL).
+        _rel_types = {"relationship", "faction"}
+        if not results and book and types and set(types) <= _rel_types:
+            rel_entities = self.search.list_entities(
+                include_types=list(types), book=book, limit=limit,
+            )
+            if rel_entities:
+                return ToolResult(success=True, data=self._format_results(rel_entities))
+
         # If still nothing, retry without book filter.
         # Models sometimes hallucinate which AP content is from.
         if not results and book:
@@ -1183,7 +1278,28 @@ class PF2eRAGServer(MCPServer):
         if len(results) >= limit:
             lines.append(f"\n[Showing first {limit} results. Use name_filter to narrow or increase limit for more.]")
 
-        return ToolResult(success=True, data="\n".join(lines))
+        result_data = "\n".join(lines)
+
+        # When listing NPCs in an AP book, automatically append relationship/faction data.
+        # This surfaces social dynamics without requiring an extra tool call.
+        if entity_type in ("npc", "npc_group") and book:
+            rel_entities = self.search.list_entities(
+                include_types=["relationship"], book=book, limit=20,
+            )
+            fac_entities = self.search.list_entities(
+                include_types=["faction"], book=book, limit=15,
+            )
+            supplements = []
+            if rel_entities:
+                rel_lines = [f"- **{e['name']}**: {e.get('content','')[:150]}" for e in rel_entities]
+                supplements.append("**NPC Relationships:**\n" + "\n".join(rel_lines))
+            if fac_entities:
+                fac_lines = [f"- **{e['name']}**: {e.get('content','')[:150]}" for e in fac_entities]
+                supplements.append("**Factions:**\n" + "\n".join(fac_lines))
+            if supplements:
+                result_data += "\n\n" + "\n\n".join(supplements)
+
+        return ToolResult(success=True, data=result_data)
 
     def _lookup_hazard(self, name: str) -> ToolResult:
         """Look up a hazard or haunt by name."""
@@ -1487,6 +1603,23 @@ class PF2eRAGServer(MCPServer):
             ]
             if all_results:
                 return ToolResult(success=True, data=self._format_results(all_results))
+            # Still nothing — fall back to page text. The entity may be stored under
+            # a different name (e.g., "Governor Heh" vs "Heh Shan-Bao") but the pages
+            # will contain the searched name verbatim.
+            if page_results:
+                page_sections = []
+                for r in page_results:
+                    ch_label = f" ({r['chapter']})" if r.get("chapter") else ""
+                    page_sections.append(
+                        f"**{r['book']}** p.{r['page_number']}{ch_label}\n{r.get('snippet', '')}"
+                    )
+                return ToolResult(
+                    success=True,
+                    data=(
+                        f"No NPC entity found for '{name}'. Related page content:\n\n"
+                        + "\n\n".join(page_sections)
+                    ),
+                )
             return ToolResult(success=True, data=f"No NPC found matching '{name}'")
 
         return ToolResult(success=True, data="\n\n---\n\n".join(sections))
@@ -1694,9 +1827,16 @@ class PF2eRAGServer(MCPServer):
             if chapters:
                 lines.append("**Table of Contents:**")
                 for ch in chapters:
-                    lines.append(
+                    ch_line = (
                         f"- **{ch['chapter']}** (pp. {ch['page_start']}-{ch['page_end']}, {ch['page_count']} pages)"
                     )
+                    snippet = (ch.get("summary") or "").strip()
+                    if snippet:
+                        # First sentence or 160 chars, whichever is shorter
+                        dot = snippet.find(". ")
+                        snippet = snippet[: dot + 1] if 0 < dot < 160 else snippet[:160]
+                        ch_line += f" — {snippet}"
+                    lines.append(ch_line)
 
             # Consolidated open threads across all chapters
             all_threads = []
@@ -1741,8 +1881,23 @@ class PF2eRAGServer(MCPServer):
         page_summaries = self.search.get_page_summaries_for_chapter(book, chapter)
 
         if not ch and not page_summaries:
-            # List available chapters to help the agent correct the name
             available = self.search.list_chapters(book)
+            # Try numeric positional match: "Chapter 2", "Part 2", "2" → 2nd chapter in TOC.
+            # Skip front-matter entries (Introduction, Preface, Appendix, etc.) so that
+            # "Chapter 2" means the 2nd narrative chapter, not the 3rd TOC entry overall.
+            if available and chapter:
+                import re as _re
+                m = _re.search(r'\b(\d+)\b', chapter)
+                if m:
+                    _frontmatter = ("introduction", "preface", "appendix", "glossary", "index", "foreword")
+                    _chapter_entries = [
+                        c for c in available
+                        if not c["chapter"].lower().startswith(_frontmatter)
+                    ]
+                    idx = int(m.group(1)) - 1  # convert to 0-indexed
+                    if 0 <= idx < len(_chapter_entries):
+                        return self._browse_book(book, _chapter_entries[idx]["chapter"])
+            # List available chapters to help the agent correct the name
             if available:
                 ch_names = ", ".join(f'"{c["chapter"]}"' for c in available[:15])
                 hint = f" Available chapters: {ch_names}"
@@ -1874,6 +2029,28 @@ class PF2eRAGServer(MCPServer):
 
         return ToolResult(success=True, data="\n".join(lines))
 
+    @staticmethod
+    def _format_creature_abilities(meta: dict) -> str:
+        """Format creature special abilities as a separate block."""
+        abilities = meta.get("abilities")
+        if not abilities or not isinstance(abilities, list):
+            return ""
+        ab_lines = []
+        for ab in abilities:
+            if not isinstance(ab, dict):
+                continue
+            ab_name = ab.get("name", "")
+            ab_desc = ab.get("description", "").strip().replace("\n", " ")
+            cost = ab.get("action_cost", "")
+            if not ab_name:
+                continue
+            cost_str = f" [{cost}]" if cost and cost != "passive" else ""
+            desc_str = f" — {ab_desc[:300]}" if ab_desc else ""
+            ab_lines.append(f"  - **{ab_name}**{cost_str}{desc_str}")
+        if not ab_lines:
+            return ""
+        return "**Special Abilities:**\n" + "\n".join(ab_lines)
+
     def _format_results(self, results: list[dict]) -> str:
         """Format search results for display, including key metadata."""
         if not results:
@@ -1889,10 +2066,19 @@ class PF2eRAGServer(MCPServer):
             if meta_parts:
                 header += "\n" + " | ".join(meta_parts)
 
+            # Special abilities for creatures — separate block after metadata line
+            abilities_block = ""
+            if r.get("type") in ("creature", "creature_family"):
+                abilities_block = self._format_creature_abilities(meta)
+
             content = r.get("content", "")
             if len(content) > 2000:
                 content = content[:2000] + "..."
-            formatted.append(f"{header}\n{content}")
+
+            parts = [f"{header}\n{content}"]
+            if abilities_block:
+                parts.append(abilities_block)
+            formatted.append("\n\n".join(parts))
 
         return f"[{len(results)} results]\n\n" + "\n\n---\n\n".join(formatted)
 
@@ -1931,6 +2117,37 @@ class PF2eRAGServer(MCPServer):
                 val = meta.get(key)
                 if val is not None and val != "":
                     parts.append(f"{key.upper() if key in ('hp','ac') else key.title()}: {val}")
+            # Saves (Fort/Ref/Will)
+            saves = meta.get("saves")
+            if saves and isinstance(saves, dict):
+                saves_str = "/".join(
+                    f"{k[0]}{'+' if int(v) >= 0 else ''}{v}"
+                    for k, v in saves.items()
+                    if v is not None
+                )
+                if saves_str:
+                    parts.append(f"Saves: {saves_str}")
+            # Immunities
+            immunities = meta.get("immunities")
+            if immunities:
+                imm_list = immunities if isinstance(immunities, list) else [immunities]
+                parts.append(f"Immunities: {', '.join(str(i) for i in imm_list)}")
+            # Resistances
+            resistances = meta.get("resistances")
+            if resistances:
+                if isinstance(resistances, list):
+                    res_list = [f"{r.get('type','?')} {r.get('value','')}" if isinstance(r, dict) else str(r) for r in resistances]
+                    parts.append(f"Resistances: {', '.join(res_list)}")
+                else:
+                    parts.append(f"Resistances: {resistances}")
+            # Weaknesses
+            weaknesses = meta.get("weaknesses")
+            if weaknesses:
+                if isinstance(weaknesses, list):
+                    wk_list = [f"{w.get('type','?')} {w.get('value','')}" if isinstance(w, dict) else str(w) for w in weaknesses]
+                    parts.append(f"Weaknesses: {', '.join(wk_list)}")
+                else:
+                    parts.append(f"Weaknesses: {weaknesses}")
             # Creature family
             family = meta.get("creature_family")
             if family:
@@ -1941,6 +2158,7 @@ class PF2eRAGServer(MCPServer):
                 cleaned = PF2eRAGServer._clean_traits(raw_traits)
                 if cleaned:
                     parts.append(f"Traits: {', '.join(cleaned)}")
+            # NOTE: abilities are rendered as a separate block in _format_results, not here
         elif entity_type in ("deity", "religion"):
             for key, label in [
                 ("favored_weapon", "Weapon"),

@@ -6,6 +6,7 @@ Provides tools for evaluating and building Pathfinder 2e encounters:
 - Get encounter building advice
 """
 
+from gm_agent.config import RAG_DB_PATH
 from gm_agent.mcp.base import MCPServer, ToolDef, ToolParameter, ToolResult
 
 # XP values by creature level relative to party level.
@@ -370,8 +371,13 @@ class EncounterServer(MCPServer):
         # Load XP tables from DB (v7+) if available; update module-level constants
         # so all module-level pure functions (creature_xp, get_threat_level, etc.)
         # pick up the DB-loaded values automatically.
-        if db_path is not None:
-            self._try_load_tables_from_db(db_path)
+        _db = str(db_path or RAG_DB_PATH)
+        self._try_load_tables_from_db(_db)
+        try:
+            from gm_agent.rag import PathfinderSearch  # pylint: disable=import-outside-toplevel
+            self._search = PathfinderSearch(db_path=_db)
+        except Exception:  # pylint: disable=broad-except
+            self._search = None
         self._tools = [
             ToolDef(
                 name="evaluate_encounter",
@@ -408,7 +414,8 @@ class EncounterServer(MCPServer):
             ToolDef(
                 name="suggest_encounter",
                 description="Suggest creature compositions for a target threat level. "
-                "Returns multiple patterns (boss+minions, swarm, balanced, etc.) with XP totals.",
+                "Returns multiple patterns (boss+minions, swarm, balanced, etc.) with XP totals "
+                "and a list of verified creatures from the database at appropriate levels.",
                 parameters=[
                     ToolParameter(
                         name="target_threat",
@@ -431,6 +438,13 @@ class EncounterServer(MCPServer):
                         name="theme",
                         type="string",
                         description="Optional theme hint (e.g., 'undead', 'beasts', 'demons')",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="book",
+                        type="string",
+                        description="Restrict creature suggestions to a specific book or AP "
+                        "(e.g., 'Kingmaker', 'Abomination Vaults'). Strongly recommended for AP-specific encounters.",
                         required=False,
                     ),
                 ],
@@ -466,7 +480,7 @@ class EncounterServer(MCPServer):
                 name="roll_random_encounter",
                 description="Calculate XP budget and creature recommendations for a random encounter. "
                 "Returns budget, recommended creature level range, and estimated count. "
-                "Combine with lookup_creature to fill the encounter.",
+                "Combine with lookup(type='creature') to fill the encounter.",
                 parameters=[
                     ToolParameter(
                         name="party_level", type="integer",
@@ -587,8 +601,41 @@ class EncounterServer(MCPServer):
             party_level = args["party_level"]
             party_size = args.get("party_size", 4)
             theme = args.get("theme")
+            book = args.get("book")
 
             result = suggest_encounter(target_threat, party_level, party_size, theme)
+
+            # Append verified creatures from DB so the narrator has actual names.
+            # Level range: party-2 to party+3 covers all composition patterns.
+            if self._search is not None:
+                min_lvl = max(-1, party_level - 2)
+                max_lvl = party_level + 3
+                search_kwargs = {
+                    "include_types": ["creature"],
+                    "min_level": min_lvl,
+                    "max_level": max_lvl,
+                    "limit": 20,
+                }
+                if book:
+                    search_kwargs["book"] = book
+                candidates = self._search.list_entities(**search_kwargs)
+                if candidates:
+                    creature_lines = []
+                    for c in candidates:
+                        lvl = (c.get("metadata") or {}).get("level", "?")
+                        creature_lines.append(f"- {c['name']} (Level {lvl})")
+                    scope = f" from {book}" if book else " (all sources — filter by book for AP-specific encounters)"
+                    result["available_creatures"] = (
+                        f"Verified creatures{scope}, level {min_lvl}–{max_lvl}:\n"
+                        + "\n".join(creature_lines)
+                    )
+                else:
+                    result["available_creatures"] = (
+                        f"No indexed creatures found at level {min_lvl}–{max_lvl}"
+                        + (f" in {book}" if book else "")
+                        + ". Use list_entities or search_content to find specific creatures."
+                    )
+
             return ToolResult(success=True, data=result)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
@@ -664,7 +711,7 @@ class EncounterServer(MCPServer):
             ]
 
             if terrain:
-                lines.append(f"**Terrain:** {terrain} — use `lookup_creature` with this filter")
+                lines.append(f"**Terrain:** {terrain} — use `lookup(type='creature')` with this filter")
                 result["terrain"] = terrain
             if time_of_day:
                 lines.append(f"**Time:** {time_of_day}")
@@ -672,7 +719,25 @@ class EncounterServer(MCPServer):
                 if time_of_day in ("night", "dusk"):
                     lines.append("*Consider nocturnal creatures or undead.*")
 
-            lines.append("\n*Use `lookup_creature` to find creatures in the level range, then `evaluate_encounter` to validate.*")
+            # Append verified creatures from DB so agent doesn't need to search separately
+            rec_min = result["recommended_creature_level"]["min"]
+            rec_max = result["recommended_creature_level"]["max"]
+            if self._search is not None:
+                candidates = self._search.list_entities(
+                    include_types=["creature"],
+                    min_level=rec_min,
+                    max_level=rec_max,
+                    limit=10,
+                )
+                if candidates:
+                    lines.append(f"\n**Available creatures (level {rec_min}–{rec_max}):**")
+                    for c in candidates:
+                        lvl = (c.get("metadata") or {}).get("level", "?")
+                        lines.append(f"- {c['name']} (Level {lvl})")
+                else:
+                    lines.append(f"\n*No indexed creatures found at level {rec_min}–{rec_max} — check Bestiary manually.*")
+            else:
+                lines.append(f"\n*Use `list_entities(type='creature', min_level={rec_min}, max_level={rec_max})` to find verified creatures.*")
 
             return ToolResult(success=True, data="\n".join(lines))
         except Exception as e:

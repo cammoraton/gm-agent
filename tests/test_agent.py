@@ -544,8 +544,7 @@ class TestAgentContextBuilding:
 
             tool_names = [t.name for t in tools]
             # RAG tools
-            assert "lookup_creature" in tool_names
-            assert "lookup_spell" in tool_names
+            assert "lookup" in tool_names
             # Campaign state tools
             assert "update_scene" in tool_names
             assert "log_event" in tool_names

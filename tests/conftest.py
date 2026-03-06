@@ -114,24 +114,12 @@ class MockMCPServer(MCPServer):
     def list_tools(self) -> list[ToolDef]:
         return [
             ToolDef(
-                name="lookup_creature",
-                description="Look up a creature by name",
+                name="lookup",
+                description="Look up a named entity by type",
                 parameters=[
-                    ToolParameter(name="name", type="string", description="Creature name")
-                ],
-            ),
-            ToolDef(
-                name="lookup_spell",
-                description="Look up a spell by name",
-                parameters=[
-                    ToolParameter(name="name", type="string", description="Spell name")
-                ],
-            ),
-            ToolDef(
-                name="lookup_item",
-                description="Look up an item by name",
-                parameters=[
-                    ToolParameter(name="name", type="string", description="Item name")
+                    ToolParameter(name="type", type="string", description="Entity type: creature, spell, item, location, hazard, npc, encounter"),
+                    ToolParameter(name="name", type="string", description="Entity name"),
+                    ToolParameter(name="book", type="string", description="Book filter", required=False),
                 ],
             ),
             ToolDef(
@@ -153,26 +141,18 @@ class MockMCPServer(MCPServer):
                         required=False,
                     ),
                     ToolParameter(
+                        name="scope",
+                        type="string",
+                        description="Scope filter: 'lore' or 'guidance'",
+                        required=False,
+                    ),
+                    ToolParameter(
                         name="limit",
                         type="integer",
                         description="Max results",
                         required=False,
                         default=10,
                     ),
-                ],
-            ),
-            ToolDef(
-                name="search_lore",
-                description="Search for world lore",
-                parameters=[
-                    ToolParameter(name="query", type="string", description="Lore query"),
-                ],
-            ),
-            ToolDef(
-                name="search_guidance",
-                description="Search for GM guidance",
-                parameters=[
-                    ToolParameter(name="query", type="string", description="Guidance query"),
                 ],
             ),
         ]
@@ -185,17 +165,9 @@ class MockMCPServer(MCPServer):
 
         # Default mock responses
         defaults = {
-            "lookup_creature": ToolResult(
+            "lookup": ToolResult(
                 success=True,
-                data="**Goblin** (creature) - Core Rulebook\nA small green humanoid",
-            ),
-            "lookup_spell": ToolResult(
-                success=True,
-                data="**Fireball** (spell) - Core Rulebook\nA burst of fire",
-            ),
-            "lookup_item": ToolResult(
-                success=True,
-                data="**Longsword** (equipment) - Core Rulebook\n1d8 slashing damage",
+                data="**Mock Entity** (creature) - Core Rulebook\nMock entity data",
             ),
             "search_rules": ToolResult(
                 success=True,
@@ -204,14 +176,6 @@ class MockMCPServer(MCPServer):
             "search_content": ToolResult(
                 success=True,
                 data="**Mock Result** (spell) - Core Rulebook\nMock content",
-            ),
-            "search_lore": ToolResult(
-                success=True,
-                data="**Absalom** (location) - World Guide\nCity at the center of the world",
-            ),
-            "search_guidance": ToolResult(
-                success=True,
-                data="**Running Combat** (guidance) - GM Core\nTips for running combat",
             ),
         }
         if name in defaults:
@@ -507,6 +471,10 @@ class MockPathfinderSearch:
         include_types: list[str] | None = None,
         exclude_types: list[str] | None = None,
         limit: int = 1000,
+        name_filter: str | None = None,
+        trait: str | None = None,
+        min_level: int | None = None,
+        max_level: int | None = None,
     ) -> list[dict]:
         return [
             {
@@ -571,7 +539,7 @@ def mock_mcp_with_errors() -> MockMCPServer:
     """Create a mock MCP server that returns errors."""
     return MockMCPServer(
         tool_results={
-            "lookup_creature": ToolResult(
+            "lookup": ToolResult(
                 success=False, error="Database connection failed"
             ),
         }

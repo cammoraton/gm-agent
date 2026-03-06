@@ -949,15 +949,28 @@ def search(query: str, doc_type: str | None, limit: int):
 @click.option(
     "--backend",
     "-b",
-    type=click.Choice(["ollama", "openai", "anthropic", "openrouter"]),
     default=None,
-    help="LLM backend to use (default: from LLM_BACKEND env)",
+    help="Orchestrator backend for tool calls. Format: 'backend' or 'backend:model' "
+         "(e.g. 'openrouter:openai/gpt-oss-20b'). Default: CHAT_BACKEND env / openrouter:openai/gpt-oss-20b",
 )
-def chat(verbose: bool, backend: str | None):
+@click.option(
+    "--narrator",
+    "-n",
+    default=None,
+    help="Narrator backend for synthesis. Format: 'backend' or 'backend:model' "
+         "(e.g. 'openrouter:openai/gpt-oss-120b'). Default: same as --backend",
+)
+def chat(verbose: bool, backend: str | None, narrator: str | None):
     """Start an interactive chat with the GM assistant.
 
     A lightweight chat mode for rules lookups and GM prep.
     Does not require or use campaign/session state.
+
+    \b
+    Examples:
+      gm chat
+      gm chat --backend openrouter:openai/gpt-oss-20b --narrator openrouter:openai/gpt-oss-120b
+      gm chat --backend ollama
 
     \b
     Commands:
@@ -966,6 +979,7 @@ def chat(verbose: bool, backend: str | None):
       /quit   - Exit chat
     """
     from gm_agent.chat import ChatAgent
+    from gm_agent.models.factory import parse_backend_spec
 
     click.echo("GM Assistant Chat")
     click.echo("Ask questions about Pathfinder 2e rules, creatures, spells, and more.")
@@ -973,9 +987,15 @@ def chat(verbose: bool, backend: str | None):
     click.echo("-" * 40)
 
     try:
-        llm = get_backend(backend) if backend else None
-        agent = ChatAgent(llm=llm, verbose=verbose)
-        click.echo(f"Using backend: {agent.llm.get_model_name()}")
+        llm = parse_backend_spec(backend) if backend else None
+        narrator_llm = parse_backend_spec(narrator) if narrator else None
+        agent = ChatAgent(llm=llm, narrator_llm=narrator_llm, verbose=verbose)
+        model_info = agent.llm.get_model_name()
+        narrator_model = agent._pipeline.synthesis_llm.get_model_name()
+        if narrator_model != model_info:
+            click.echo(f"Orchestrator: {model_info}  |  Narrator: {narrator_model}")
+        else:
+            click.echo(f"Using backend: {model_info}")
     except Exception as e:
         click.echo(f"Error initializing chat agent: {e}", err=True)
         sys.exit(1)

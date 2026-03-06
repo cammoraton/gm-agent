@@ -225,11 +225,11 @@ class TestCreatureModifierServer:
         assert "get_creature_stats" in tool_names
         assert "scaffold_creature" in tool_names
         assert "scaffold_hazard" in tool_names
-        assert "scaffold_troop" in tool_names
-        assert "scaffold_swarm" in tool_names
-        assert "scaffold_haunt" in tool_names
+        assert "scaffold_troop" not in tool_names
+        assert "scaffold_swarm" not in tool_names
+        assert "scaffold_haunt" not in tool_names
         assert "design_creature" in tool_names
-        assert len(tools) == 9
+        assert len(tools) == 6
 
     # --- apply_elite_weak tests ---
 
@@ -414,11 +414,12 @@ class TestCreatureModifierServer:
             result = server.call_tool("scaffold_hazard", {"level": level})
             assert result.success, f"Failed for level {level}"
 
-    # --- scaffold_troop tests ---
+    # --- scaffold_creature(type='troop') tests ---
 
     def test_scaffold_troop_large(self, server):
-        result = server.call_tool("scaffold_troop", {
+        result = server.call_tool("scaffold_creature", {
             "level": 5,
+            "type": "troop",
             "size": "large",
             "name": "Goblin Troop",
         })
@@ -431,8 +432,9 @@ class TestCreatureModifierServer:
         assert "Broken" in result.data
 
     def test_scaffold_troop_huge(self, server):
-        result = server.call_tool("scaffold_troop", {
+        result = server.call_tool("scaffold_creature", {
             "level": 10,
+            "type": "troop",
             "size": "huge",
             "name": "Skeleton Horde",
         })
@@ -442,8 +444,9 @@ class TestCreatureModifierServer:
         assert "15 ft." in result.data
 
     def test_scaffold_troop_gargantuan(self, server):
-        result = server.call_tool("scaffold_troop", {
+        result = server.call_tool("scaffold_creature", {
             "level": 15,
+            "type": "troop",
             "size": "gargantuan",
             "name": "Army of the Dead",
         })
@@ -452,19 +455,21 @@ class TestCreatureModifierServer:
         assert "20 ft." in result.data
 
     def test_scaffold_troop_invalid_size(self, server):
-        result = server.call_tool("scaffold_troop", {
+        result = server.call_tool("scaffold_creature", {
             "level": 5,
+            "type": "troop",
             "size": "tiny",
             "name": "Bad Troop",
         })
         assert not result.success
         assert "Invalid troop size" in result.error
 
-    # --- scaffold_swarm tests ---
+    # --- scaffold_creature(type='swarm') tests ---
 
     def test_scaffold_swarm_large(self, server):
-        result = server.call_tool("scaffold_swarm", {
+        result = server.call_tool("scaffold_creature", {
             "level": 3,
+            "type": "swarm",
             "size": "large",
             "name": "Rat Swarm",
         })
@@ -477,8 +482,9 @@ class TestCreatureModifierServer:
         assert "Swarming Bites" in result.data
 
     def test_scaffold_swarm_huge(self, server):
-        result = server.call_tool("scaffold_swarm", {
+        result = server.call_tool("scaffold_creature", {
             "level": 7,
+            "type": "swarm",
             "size": "huge",
             "name": "Centipede Swarm",
         })
@@ -487,8 +493,9 @@ class TestCreatureModifierServer:
         assert "Huge" in result.data
 
     def test_scaffold_swarm_invalid_size(self, server):
-        result = server.call_tool("scaffold_swarm", {
+        result = server.call_tool("scaffold_creature", {
             "level": 3,
+            "type": "swarm",
             "size": "gargantuan",
             "name": "Bad Swarm",
         })
@@ -497,8 +504,8 @@ class TestCreatureModifierServer:
 
     def test_scaffold_troop_level_clamping(self, server):
         """Levels outside -1..25 should be clamped."""
-        result = server.call_tool("scaffold_troop", {
-            "level": 30, "size": "large", "name": "Test",
+        result = server.call_tool("scaffold_creature", {
+            "level": 30, "type": "troop", "size": "large", "name": "Test",
         })
         assert result.success
         assert "Level 25" in result.data
@@ -537,34 +544,26 @@ class TestStatTableCompleteness:
 
 
 class TestScaffoldHaunt:
-    """Tests for scaffold_haunt tool."""
+    """Tests for scaffold_hazard(type='haunt') tool."""
 
     @pytest.fixture
     def server(self):
-        with patch.object(
-            __import__(
-                "gm_agent.systems.pf2e.servers.creature_modifier",
-                fromlist=["CreatureModifierServer"],
-            ).CreatureModifierServer,
-            "__init__",
-            lambda self, **kwargs: (
-                setattr(self, "search", MagicMock()),
-                setattr(self, "backend", None),
-                setattr(self, "_tools", []),
-            ) and None,
-        ):
-            from gm_agent.systems.pf2e.servers.creature_modifier import (
-                CreatureModifierServer,
-                HAZARD_STATS_BY_LEVEL,
-            )
+        from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer
 
-            class _Server(CreatureModifierServer):
-                def __init__(self):
-                    self.search = MagicMock()
-                    self.backend = None
-                    self._tools = self._build_tools()
+        class _Server(CreatureModifierServer):
+            def __init__(self):
+                self.search = MagicMock()
+                self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
+                self._tools = self._build_tools()
 
-            return _Server()
+        return _Server()
 
     def test_scaffold_haunt_returns_stat_block(self):
         from gm_agent.systems.pf2e.servers.creature_modifier import CreatureModifierServer, HAZARD_STATS_BY_LEVEL
@@ -573,11 +572,19 @@ class TestScaffoldHaunt:
             def __init__(self):
                 self.search = MagicMock()
                 self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
                 self._tools = self._build_tools()
 
         server = _Server()
-        result = server.call_tool("scaffold_haunt", {
+        result = server.call_tool("scaffold_hazard", {
             "level": 4,
+            "type": "haunt",
             "name": "Weeping Widow",
             "trigger": "When a living creature enters room 7",
             "disable_skills": "Religion,Occultism",
@@ -596,11 +603,19 @@ class TestScaffoldHaunt:
             def __init__(self):
                 self.search = MagicMock()
                 self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
                 self._tools = self._build_tools()
 
         server = _Server()
-        result = server.call_tool("scaffold_haunt", {
+        result = server.call_tool("scaffold_hazard", {
             "level": 3,
+            "type": "haunt",
             "name": "Blood Oath",
             "trigger": "When entering the chapel",
         })
@@ -619,11 +634,18 @@ class TestScaffoldHaunt:
             def __init__(self):
                 self.search = MagicMock()
                 self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
                 self._tools = self._build_tools()
 
         server = _Server()
         level = 5
-        result = server.call_tool("scaffold_haunt", {"level": level, "name": "Test"})
+        result = server.call_tool("scaffold_hazard", {"level": level, "type": "haunt", "name": "Test"})
         assert result.success
         expected_dc = str(HAZARD_STATS_BY_LEVEL[level]["disable_dc"])
         assert expected_dc in result.data
@@ -635,11 +657,19 @@ class TestScaffoldHaunt:
             def __init__(self):
                 self.search = MagicMock()
                 self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
                 self._tools = self._build_tools()
 
         server = _Server()
-        result = server.call_tool("scaffold_haunt", {
+        result = server.call_tool("scaffold_hazard", {
             "level": 3,
+            "type": "haunt",
             "name": "Complex Haunt",
             "complexity": "complex",
         })
@@ -653,11 +683,18 @@ class TestScaffoldHaunt:
             def __init__(self):
                 self.search = MagicMock()
                 self.backend = None
+                self._creature_stats = CREATURE_STATS_BY_LEVEL
+                self._hazard_stats = HAZARD_STATS_BY_LEVEL
+                self._elite_hp = ELITE_HP_ADJUSTMENT
+                self._role_adjustments = ROLE_ADJUSTMENTS
+                from gm_agent.systems.pf2e.servers.creature_modifier import TROOP_SIZE_TABLE, SWARM_SIZE_TABLE
+                self._troop_size_table = TROOP_SIZE_TABLE
+                self._swarm_size_table = SWARM_SIZE_TABLE
                 self._tools = self._build_tools()
 
         server = _Server()
         for level in (-1, 0, 5, 10, 20, 25):
-            result = server.call_tool("scaffold_haunt", {"level": level})
+            result = server.call_tool("scaffold_hazard", {"level": level, "type": "haunt"})
             assert result.success, f"Failed for level {level}"
 
 

@@ -119,15 +119,18 @@ class TestRealOllamaBackend:
             ),
             Message(
                 role="user",
-                content="Use the lookup_creature tool to find info about a goblin.",
+                content="Use the lookup tool with type=creature to find info about a goblin.",
             ),
         ]
 
         tools = [
             ToolDef(
-                name="lookup_creature",
-                description="Look up creature stats",
-                parameters=[ToolParameter(name="name", type="string", description="Creature name")],
+                name="lookup",
+                description="Look up a named entity by type",
+                parameters=[
+                    ToolParameter(name="type", type="string", description="Entity type: creature, spell, item, npc"),
+                    ToolParameter(name="name", type="string", description="Entity name"),
+                ],
             )
         ]
 
@@ -149,18 +152,18 @@ class TestRealRAGServer:
     """Tests that verify PF2eRAGServer works with real database."""
 
     def test_list_tools(self, real_rag_server):
-        """Should list all 5 tools."""
+        """Should list all 10 tools."""
         tools = real_rag_server.list_tools()
 
-        assert len(tools) == 5
+        assert len(tools) == 10
         tool_names = [t.name for t in tools]
-        assert "lookup_creature" in tool_names
-        assert "lookup_spell" in tool_names
+        assert "lookup" in tool_names
+        assert "search_rules" in tool_names
         print(f"RAG tools: {tool_names}")
 
     def test_lookup_creature_goblin(self, real_rag_server):
         """Should find goblin in real database."""
-        result = real_rag_server.call_tool("lookup_creature", {"name": "goblin"})
+        result = real_rag_server.call_tool("lookup", {"type": "creature", "name": "goblin"})
 
         assert result.success is True
         assert result.data is not None
@@ -170,7 +173,7 @@ class TestRealRAGServer:
 
     def test_lookup_spell_fireball(self, real_rag_server):
         """Should find fireball spell in real database."""
-        result = real_rag_server.call_tool("lookup_spell", {"name": "fireball"})
+        result = real_rag_server.call_tool("lookup", {"type": "spell", "name": "fireball"})
 
         assert result.success is True
         assert result.data is not None

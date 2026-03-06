@@ -219,30 +219,6 @@ class DiceServer(MCPServer):
                 ],
             ),
             ToolDef(
-                name="roll_fortune",
-                description="Roll with fortune/hero point - roll twice and take the higher result. "
-                "Used when spending hero points or with certain abilities.",
-                parameters=[
-                    ToolParameter(
-                        name="expression",
-                        type="string",
-                        description="Dice expression to roll twice",
-                    ),
-                ],
-            ),
-            ToolDef(
-                name="roll_misfortune",
-                description="Roll with misfortune - roll twice and take the lower result. "
-                "Used with frightened, enfeebled, or other penalties.",
-                parameters=[
-                    ToolParameter(
-                        name="expression",
-                        type="string",
-                        description="Dice expression to roll twice",
-                    ),
-                ],
-            ),
-            ToolDef(
                 name="check_result",
                 description="Determine the degree of success for a d20 check against a DC. "
                 "Returns critical success, success, failure, or critical failure.",
@@ -300,10 +276,6 @@ class DiceServer(MCPServer):
             return self._roll_dice(args)
         elif name == "roll_multiple":
             return self._roll_multiple(args)
-        elif name == "roll_fortune":
-            return self._roll_fortune(args)
-        elif name == "roll_misfortune":
-            return self._roll_misfortune(args)
         elif name == "check_result":
             return self._check_result(args)
         elif name == "roll_check":
@@ -340,20 +312,6 @@ class DiceServer(MCPServer):
                 },
             )
         except Exception as e:
-            return ToolResult(success=False, error=str(e))
-
-    def _roll_fortune(self, args: dict) -> ToolResult:
-        try:
-            result = roll_fortune(args["expression"])
-            return ToolResult(success=True, data=result)
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
-
-    def _roll_misfortune(self, args: dict) -> ToolResult:
-        try:
-            result = roll_misfortune(args["expression"])
-            return ToolResult(success=True, data=result)
-        except ValueError as e:
             return ToolResult(success=False, error=str(e))
 
     def _check_result(self, args: dict) -> ToolResult:

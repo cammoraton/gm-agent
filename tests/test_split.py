@@ -52,9 +52,10 @@ class MockMCP:
     def list_tools(self) -> list[ToolDef]:
         return [
             ToolDef(
-                name="lookup_creature",
-                description="Look up a creature by name",
+                name="lookup",
+                description="Look up a named entity by type",
                 parameters=[
+                    ToolParameter(name="type", type="string", description="Entity type"),
                     ToolParameter(name="name", type="string", description="Name"),
                 ],
             ),
@@ -214,7 +215,7 @@ class TestOrchestratorPhase:
 
         tools = ret_llm.calls[0][1]
         tool_names = {t.name for t in tools}
-        assert "lookup_creature" in tool_names
+        assert "lookup" in tool_names
         assert "search_content" in tool_names
         assert "roll_dice" in tool_names
         assert "roll_check" in tool_names
@@ -424,10 +425,10 @@ class TestOrchestratorPhase:
         assert result.tool_calls[0][1] == {"query": "treat wounds", "limit": 5}
 
     def test_premature_synthesize_rejected(self):
-        """Synthesize before MIN_TOOLS (3) calls is rejected, forcing more searching."""
+        """Synthesize before MIN_TOOLS (2) calls is rejected, forcing more searching."""
         pipeline, ret_llm, _, mcp = _make_pipeline(
             retrieval_responses=[
-                # Iteration 0: 1 call + synthesize → rejected (1 < 3)
+                # Iteration 0: 1 call + synthesize → rejected (1 < 2)
                 LLMResponse(
                     text="",
                     tool_calls=[
@@ -435,7 +436,7 @@ class TestOrchestratorPhase:
                         ToolCall(id="s1", name="synthesize", args={}),
                     ],
                 ),
-                # Iteration 1: 1 more call + synthesize → rejected (2 < 3)
+                # Iteration 1: 1 more call + synthesize → accepted (2 >= 2)
                 LLMResponse(
                     text="",
                     tool_calls=[
@@ -443,30 +444,21 @@ class TestOrchestratorPhase:
                         ToolCall(id="s2", name="synthesize", args={}),
                     ],
                 ),
-                # Iteration 2: 1 more call + synthesize → accepted (3 >= 3)
-                LLMResponse(
-                    text="",
-                    tool_calls=[
-                        ToolCall(id="c3", name="search_content", args={"query": "goblin"}),
-                        ToolCall(id="s3", name="synthesize", args={}),
-                    ],
-                ),
             ],
             synthesis_responses=[LLMResponse(text="Answer.", tool_calls=[])],
         )
         result, _ = pipeline._orchestrate("goblin", [], max_iterations=5)
-        # All three tool calls should have executed
-        assert len(result.tool_calls) == 3
+        # Two tool calls should have executed before synthesize was accepted
+        assert len(result.tool_calls) == 2
         assert result.tool_calls[0][0] == "lookup_creature"
         assert result.tool_calls[1][0] == "search_lore"
-        assert result.tool_calls[2][0] == "search_content"
-        # Two rejection messages sent (at 1 and 2 tool calls)
+        # One rejection message sent (at 1 tool call)
         all_messages = ret_llm.calls[-1][0]
         rejection_msgs = [
             m for m in all_messages
-            if m.role == "tool" and "Not enough" in m.content
+            if m.role == "tool" and "Only" in m.content and "tool call" in m.content
         ]
-        assert len(rejection_msgs) == 2
+        assert len(rejection_msgs) == 1
 
     def test_implicit_handoff_nudge(self):
         """If model stops calling tools with too few results, nudge it to continue."""
@@ -503,7 +495,7 @@ class TestOrchestratorPhase:
         all_messages = ret_llm.calls[-1][0]
         nudge_msgs = [
             m for m in all_messages
-            if m.role == "user" and "only made" in m.content.lower()
+            if m.role == "user" and "tool call" in m.content.lower()
         ]
         assert len(nudge_msgs) >= 1
 
@@ -577,7 +569,7 @@ class TestNarratorPhase:
             duration_ms=50.0,
             model="mock-ret",
         )]
-        text = pipeline._narrate("What is a goblin?", retrievals, None, "")
+        text, _ = pipeline._narrate("What is a goblin?", retrievals, None, "")
         assert text == "Goblins are small creatures."
 
     def test_narrator_receives_reference_material(self):
@@ -655,7 +647,7 @@ class TestNarratorPhase:
             tool_calls=[("lookup_creature", {"name": "goblin"}, "Goblin data")],
             duration_ms=50, model="m",
         )]
-        text = pipeline._narrate("goblin?", retrievals, None, "")
+        text, _ = pipeline._narrate("goblin?", retrievals, None, "")
         assert text == "Here is the answer."
         assert len(syn_llm.calls) == 2
 
@@ -672,7 +664,7 @@ class TestNarratorPhase:
             tool_calls=[("lookup_creature", {"name": "goblin"}, "**Goblin** Level -1")],
             duration_ms=50, model="m",
         )]
-        text = pipeline._narrate("goblin?", retrievals, None, "")
+        text, _ = pipeline._narrate("goblin?", retrievals, None, "")
         assert "Here's what I found" in text
         assert "**Goblin** Level -1" in text
 
@@ -686,7 +678,7 @@ class TestNarratorPhase:
             ],
         )
         retrievals = [RetrievalResult(tool_calls=[], duration_ms=10, model="m")]
-        text = pipeline._narrate("test?", retrievals, None, "")
+        text, _ = pipeline._narrate("test?", retrievals, None, "")
         assert "rephrasing" in text.lower()
 
 

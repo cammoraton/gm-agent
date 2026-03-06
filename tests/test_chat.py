@@ -33,8 +33,8 @@ class TestChatAgentInit:
     """Tests for ChatAgent initialization."""
 
     def test_init_default_llm(self):
-        """Should use get_backend by default."""
-        with patch("gm_agent.chat.get_backend") as mock_get_backend:
+        """Should use get_chat_backend by default."""
+        with patch("gm_agent.chat.get_chat_backend") as mock_get_backend:
             mock_get_backend.return_value = MagicMock()
             agent = ChatAgent()
             mock_get_backend.assert_called_once()
@@ -101,8 +101,8 @@ class TestChatAgentInit:
         agent = ChatAgent(llm=mock_llm)
         tools = agent.get_tools()
         tool_names = [t.name for t in tools]
-        # Should have lookup tools
-        assert "lookup_creature" in tool_names or len(tools) > 0
+        # Should have lookup tool
+        assert "lookup" in tool_names or len(tools) > 0
         agent.close()
 
     def test_get_tools_returns_all_tools(self):

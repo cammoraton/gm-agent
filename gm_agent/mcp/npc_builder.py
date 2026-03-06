@@ -192,7 +192,7 @@ class NPCBuilderServer(MCPServer):
         data_parts = []
 
         # Try creature lookup first (for monsters)
-        creature_result = self._rag_server.call_tool("lookup_creature", {"name": name})
+        creature_result = self._rag_server.call_tool("lookup", {"type": "creature", "name": name})
         if creature_result.success and creature_result.data:
             data_parts.append(f"=== Creature Data ===\n{creature_result.data}")
 
@@ -210,8 +210,8 @@ class NPCBuilderServer(MCPServer):
 
         # Search lore for additional context
         lore_result = self._rag_server.call_tool(
-            "search_lore",
-            {"query": name, "limit": 3}
+            "search_content",
+            {"query": name, "scope": "lore", "limit": 3}
         )
         if lore_result.success and lore_result.data:
             data_parts.append(f"\n=== Lore ===\n{lore_result.data}")

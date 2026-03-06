@@ -503,7 +503,7 @@ class CreatureModifierServer(MCPServer):
                 description=(
                     "Return a creature's stat block as structured JSON for calculation use. "
                     "Includes level, hp, ac, saves, attacks, skills, perception, speed. "
-                    "Distinct from lookup_creature which returns narrative text."
+                    "Distinct from lookup(type='creature') which returns narrative text."
                 ),
                 parameters=[
                     ToolParameter(
@@ -517,10 +517,10 @@ class CreatureModifierServer(MCPServer):
             ToolDef(
                 name="scaffold_creature",
                 description=(
-                    "Generate a baseline stat block skeleton from GM Core creature creation "
-                    "tables for a given level and role. Returns moderate-value stats adjusted "
-                    "by role (brute, sniper, skirmisher, soldier, spellcaster). Use this as a "
-                    "starting point when building custom creatures."
+                    "Generate a baseline stat block from GM Core creation tables. "
+                    "type='creature' (default): standard creature scaffold by role. "
+                    "type='troop': group of creatures acting as one, with HP thresholds and area attacks. "
+                    "type='swarm': mass of Tiny creatures with auto-damage and swarm defenses."
                 ),
                 parameters=[
                     ToolParameter(
@@ -529,33 +529,55 @@ class CreatureModifierServer(MCPServer):
                         description="Creature level (-1 to 25)",
                     ),
                     ToolParameter(
+                        name="type",
+                        type="string",
+                        description="Creature variant: 'creature', 'troop', or 'swarm'",
+                        required=False,
+                        default="creature",
+                    ),
+                    ToolParameter(
                         name="role",
                         type="string",
-                        description="Creature role: 'brute', 'sniper', 'skirmisher', 'soldier', 'spellcaster'",
+                        description="Creature role (creature type only): 'brute', 'sniper', 'skirmisher', 'soldier', 'spellcaster'",
                         required=False,
                         default="soldier",
                     ),
                     ToolParameter(
+                        name="size",
+                        type="string",
+                        description="Size for troop ('large','huge','gargantuan') or swarm ('large','huge')",
+                        required=False,
+                        default="large",
+                    ),
+                    ToolParameter(
                         name="name",
                         type="string",
-                        description="Optional creature name for the scaffold",
+                        description="Optional name for the scaffold",
                         required=False,
-                        default="Custom Creature",
+                        default="",
                     ),
                 ],
             ),
             ToolDef(
                 name="scaffold_hazard",
                 description=(
-                    "Generate a baseline hazard stat block from GM Core hazard creation tables "
-                    "for a given level and complexity. Returns AC, HP, saves, stealth/disable DCs, "
-                    "attack bonus, and damage."
+                    "Generate a baseline hazard stat block from GM Core hazard creation tables. "
+                    "type='trap' (default): physical trap with AC, HP, attack, disable DC. "
+                    "type='haunt': spiritual hazard immune to physical damage, disabled with Religion/Occultism; "
+                    "returns stat block plus JSON config for start_subsystem(type='haunt')."
                 ),
                 parameters=[
                     ToolParameter(
                         name="level",
                         type="integer",
                         description="Hazard level (-1 to 25)",
+                    ),
+                    ToolParameter(
+                        name="type",
+                        type="string",
+                        description="Hazard variant: 'trap' or 'haunt'",
+                        required=False,
+                        default="trap",
                     ),
                     ToolParameter(
                         name="complexity",
@@ -567,86 +589,33 @@ class CreatureModifierServer(MCPServer):
                     ToolParameter(
                         name="name",
                         type="string",
-                        description="Optional hazard name for the scaffold",
+                        description="Optional hazard name",
                         required=False,
-                        default="Custom Hazard",
+                        default="",
                     ),
-                ],
-            ),
-            # --- Troop/Swarm tools ---
-            ToolDef(
-                name="scaffold_troop",
-                description=(
-                    "Generate a troop stat block for a given level and size. Troops are "
-                    "groups of creatures acting as one. Returns HP with threshold "
-                    "markers (full/diminished/broken), area attacks, and troop defenses."
-                ),
-                parameters=[
-                    ToolParameter(name="level", type="integer", description="Troop level (-1 to 25)"),
-                    ToolParameter(
-                        name="size", type="string",
-                        description="Troop size: 'large', 'huge', 'gargantuan'",
-                        required=False, default="large",
-                    ),
-                    ToolParameter(name="name", type="string", description="Troop name", required=False, default="Custom Troop"),
-                ],
-            ),
-            ToolDef(
-                name="scaffold_swarm",
-                description=(
-                    "Generate a swarm stat block for a given level and size. Swarms are "
-                    "masses of Tiny creatures. Returns HP, automatic damage, swarm defenses, "
-                    "physical resistance, and area weakness."
-                ),
-                parameters=[
-                    ToolParameter(name="level", type="integer", description="Swarm level (-1 to 25)"),
-                    ToolParameter(
-                        name="size", type="string",
-                        description="Swarm size: 'large' or 'huge'",
-                        required=False, default="large",
-                    ),
-                    ToolParameter(name="name", type="string", description="Swarm name", required=False, default="Custom Swarm"),
-                ],
-            ),
-            ToolDef(
-                name="scaffold_haunt",
-                description=(
-                    "Generate a haunt stat block and ready-to-use config dict for start_subsystem. "
-                    "Haunts are spiritual hazards immune to physical damage that must be disabled "
-                    "with Religion or Occultism (or other skills) checks. Returns formatted stat block "
-                    "plus JSON config dict you can pass directly to start_subsystem(type='haunt', ...)."
-                ),
-                parameters=[
-                    ToolParameter(name="level", type="integer", description="Haunt level (-1 to 25)"),
-                    ToolParameter(name="name", type="string", description="Haunt name", required=False, default="Custom Haunt"),
                     ToolParameter(
                         name="trigger", type="string",
-                        description="Trigger condition (e.g., 'When a living creature enters the room')",
+                        description="(haunt) Trigger condition",
                         required=False, default="When a living creature enters the area",
                     ),
                     ToolParameter(
-                        name="complexity", type="string",
-                        description="'simple' (1 action, 1 disable condition) or 'complex' (2+ disable conditions)",
-                        required=False, default="simple",
-                    ),
-                    ToolParameter(
                         name="disable_skills", type="string",
-                        description="Comma-separated skills that can disable the haunt (e.g., 'Religion,Occultism'). Defaults to 'Religion,Occultism'.",
+                        description="(haunt) Comma-separated disable skills (default: 'Religion,Occultism')",
                         required=False, default="",
                     ),
                     ToolParameter(
                         name="successes_needed", type="integer",
-                        description="Successes needed per condition (default: 1 for simple, 2 for complex)",
+                        description="(haunt) Successes needed per condition (default: 1 simple, 2 complex)",
                         required=False,
                     ),
                     ToolParameter(
                         name="anchor", type="string",
-                        description="Object or location the haunt is anchored to (e.g., 'The bloodstained mirror')",
+                        description="(haunt) Object or location the haunt is anchored to",
                         required=False, default="",
                     ),
                     ToolParameter(
                         name="reset_interval", type="string",
-                        description="How long until haunt resets (e.g., '1 day', '1 hour', 'never'). Default: '1 day'",
+                        description="(haunt) Time until haunt resets (default: '1 day')",
                         required=False, default="1 day",
                     ),
                 ],
@@ -705,40 +674,44 @@ class CreatureModifierServer(MCPServer):
             elif name == "get_creature_stats":
                 return self._get_creature_stats(args["creature_name"])
             elif name == "scaffold_creature":
-                return self._scaffold_creature(
-                    args["level"],
-                    args.get("role", "soldier"),
-                    args.get("name", "Custom Creature"),
-                )
+                creature_type = args.get("type", "creature").lower()
+                if creature_type == "troop":
+                    return self._scaffold_troop(
+                        args["level"],
+                        args.get("size", "large"),
+                        args.get("name", "") or "Custom Troop",
+                    )
+                elif creature_type == "swarm":
+                    return self._scaffold_swarm(
+                        args["level"],
+                        args.get("size", "large"),
+                        args.get("name", "") or "Custom Swarm",
+                    )
+                else:
+                    return self._scaffold_creature(
+                        args["level"],
+                        args.get("role", "soldier"),
+                        args.get("name", "") or "Custom Creature",
+                    )
             elif name == "scaffold_hazard":
-                return self._scaffold_hazard(
-                    args["level"],
-                    args.get("complexity", "simple"),
-                    args.get("name", "Custom Hazard"),
-                )
-            elif name == "scaffold_troop":
-                return self._scaffold_troop(
-                    args["level"],
-                    args.get("size", "large"),
-                    args.get("name", "Custom Troop"),
-                )
-            elif name == "scaffold_swarm":
-                return self._scaffold_swarm(
-                    args["level"],
-                    args.get("size", "large"),
-                    args.get("name", "Custom Swarm"),
-                )
-            elif name == "scaffold_haunt":
-                return self._scaffold_haunt(
-                    args["level"],
-                    args.get("name", "Custom Haunt"),
-                    args.get("trigger", "When a living creature enters the area"),
-                    args.get("complexity", "simple"),
-                    args.get("disable_skills", ""),
-                    args.get("successes_needed"),
-                    args.get("anchor", ""),
-                    args.get("reset_interval", "1 day"),
-                )
+                hazard_type = args.get("type", "trap").lower()
+                if hazard_type == "haunt":
+                    return self._scaffold_haunt(
+                        args["level"],
+                        args.get("name", "") or "Custom Haunt",
+                        args.get("trigger", "When a living creature enters the area"),
+                        args.get("complexity", "simple"),
+                        args.get("disable_skills", ""),
+                        args.get("successes_needed"),
+                        args.get("anchor", ""),
+                        args.get("reset_interval", "1 day"),
+                    )
+                else:
+                    return self._scaffold_hazard(
+                        args["level"],
+                        args.get("complexity", "simple"),
+                        args.get("name", "") or "Custom Hazard",
+                    )
             elif name == "design_creature":
                 return self._design_creature(
                     args.get("level"),

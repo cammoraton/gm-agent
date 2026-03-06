@@ -220,7 +220,7 @@ class MCPClient:
 
         self._local_servers["pf2e-rag"] = PF2eRAGServer(campaign_books=campaign_books)
         self._local_servers["encounter"] = EncounterServer()
-        self._local_servers["creature-modifier"] = CreatureModifierServer()
+        self._local_servers["creature-modifier"] = CreatureModifierServer(backend=llm)
 
         if campaign_id:
             # Only add core servers if not already created
