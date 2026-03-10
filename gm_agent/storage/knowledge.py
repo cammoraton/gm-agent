@@ -86,11 +86,19 @@ class KnowledgeStore:
                 tags TEXT
             );
 
+            -- Alias table: alternate names/nicknames for the same character_id
+            CREATE TABLE IF NOT EXISTS knowledge_aliases (
+                character_id TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                PRIMARY KEY (character_id, alias)
+            );
+
             -- Indexes for efficient queries
             CREATE INDEX IF NOT EXISTS idx_knowledge_character ON knowledge(character_id);
             CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge(knowledge_type);
             CREATE INDEX IF NOT EXISTS idx_knowledge_importance ON knowledge(importance);
             CREATE INDEX IF NOT EXISTS idx_knowledge_sharing ON knowledge(sharing_condition);
+            CREATE INDEX IF NOT EXISTS idx_alias_lower ON knowledge_aliases(LOWER(alias));
         """)
         conn.commit()
 
@@ -162,6 +170,42 @@ class KnowledgeStore:
             tags=tags or [],
         )
 
+    def add_alias(self, character_id: str, alias: str) -> None:
+        """Register an alternate name/nickname for a character.
+
+        Aliases are checked by query_knowledge_by_name_fuzzy so that
+        "Grandmother Hu" resolves to the same entries as "Granny Hu".
+        """
+        alias = alias.strip()
+        if not alias:
+            return
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO knowledge_aliases (character_id, alias) VALUES (?, ?)",
+            (character_id, alias),
+        )
+        conn.commit()
+
+    def list_characters(self) -> list[dict[str, str]]:
+        """Return all known characters excluding the party placeholder.
+
+        Used to build an NPC roster for crunch prompts so the LLM can
+        map session names to canonical character_ids.
+
+        Returns:
+            List of dicts with 'character_id' and 'character_name'.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT DISTINCT character_id, character_name FROM knowledge "
+            "WHERE character_id NOT IN ('__party__', '__exploration__') "
+            "ORDER BY character_name",
+        ).fetchall()
+        return [
+            {"character_id": r["character_id"], "character_name": r["character_name"]}
+            for r in rows
+        ]
+
     def query_knowledge(
         self,
         character_id: str | None = None,
@@ -227,6 +271,89 @@ class KnowledgeStore:
         rows = cursor.fetchall()
 
         return [self._row_to_entry(row) for row in rows]
+
+    def query_knowledge_by_name_fuzzy(
+        self,
+        name: str,
+        knowledge_type: str | None = None,
+        limit: int = 20,
+    ) -> tuple[list[KnowledgeEntry], str | None]:
+        """Query knowledge by partial character name match.
+
+        Returns (entries, canonical_name) where canonical_name is the best-matching
+        character_name found in the DB, or None if no match.
+        Used as a fallback when no CharacterProfile exists (e.g. prep-seeded NPCs).
+        """
+        conn = self._get_conn()
+        # Find all distinct character names that contain the query tokens
+        words = [w for w in name.lower().split() if len(w) > 2]
+        if not words:
+            return [], None
+
+        # Score each distinct name by how many query words it contains
+        rows = conn.execute(
+            "SELECT DISTINCT character_id, character_name FROM knowledge"
+        ).fetchall()
+
+        best_id: str | None = None
+        best_name: str | None = None
+        best_score = 0
+        for row in rows:
+            cn = row["character_name"].lower()
+            score = sum(1 for w in words if w in cn)
+            if score > best_score:
+                best_score = score
+                best_id = row["character_id"]
+                best_name = row["character_name"]
+
+        # Also check aliases table — prep pipeline seeds aliases separately
+        try:
+            alias_rows = conn.execute(
+                "SELECT character_id, alias FROM knowledge_aliases"
+            ).fetchall()
+            for arow in alias_rows:
+                alias_lower = arow["alias"].lower()
+                score = sum(1 for w in words if w in alias_lower)
+                if score > best_score:
+                    best_score = score
+                    cid = arow["character_id"]
+                    # Resolve canonical display name from knowledge table
+                    name_row = conn.execute(
+                        "SELECT character_name FROM knowledge WHERE character_id = ? LIMIT 1",
+                        (cid,),
+                    ).fetchone()
+                    best_id = cid
+                    best_name = name_row["character_name"] if name_row else arow["alias"]
+        except Exception:
+            pass  # aliases table absent in older DBs — degrade gracefully
+
+        if not best_id or best_score == 0:
+            return [], None
+
+        # Gather all character_ids that share the same canonical name (dedup variants)
+        id_rows = conn.execute(
+            "SELECT DISTINCT character_id FROM knowledge WHERE LOWER(character_name) = LOWER(?)",
+            (best_name,),
+        ).fetchall()
+        char_ids = [r["character_id"] for r in id_rows] or [best_id]
+
+        params: list[Any] = char_ids[:]
+        placeholders = ",".join("?" * len(char_ids))
+        sql = f"""
+            SELECT id, character_id, character_name, content,
+                   knowledge_type, sharing_condition, source,
+                   importance, decay_rate, learned_at, tags
+            FROM knowledge
+            WHERE character_id IN ({placeholders})
+        """
+        if knowledge_type:
+            sql += " AND knowledge_type = ?"
+            params.append(knowledge_type)
+        sql += " ORDER BY importance DESC, learned_at DESC LIMIT ?"
+        params.append(limit)
+
+        entries = [self._row_to_entry(r) for r in conn.execute(sql, params).fetchall()]
+        return entries, best_name
 
     def get_by_id(self, knowledge_id: int) -> KnowledgeEntry | None:
         """Get a knowledge entry by ID."""

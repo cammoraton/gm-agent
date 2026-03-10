@@ -279,7 +279,16 @@ class PrepPipeline:
         resolved = []
         seen = set()
 
+        # Expand series names (e.g. "Season of Ghosts" → all 4 volumes)
+        expanded: list[str] = []
         for name in books:
+            series = self.search.resolve_book_names(name)
+            if series:
+                expanded.extend(series)
+            else:
+                expanded.append(name)  # let the per-book path emit the warning
+
+        for name in expanded:
             exact_name = self.search.resolve_book_name(name)
             if not exact_name:
                 logger.warning("Could not resolve book: %s", name)
@@ -294,6 +303,13 @@ class PrepPipeline:
             # Books with "Players Guide" in the name but no summary
             if book_type == "unknown" and "players guide" in exact_name.lower():
                 book_type = "players_guide"
+            # Fallback: infer book_type from content table if book_summaries is missing.
+            # Some books (e.g. Season of Ghosts) have full entity content indexed but
+            # no book_summaries entry, causing the pipeline to skip NPC seeding entirely.
+            if book_type == "unknown":
+                entities = self.search.list_entities(book=exact_name, limit=1)
+                if entities and entities[0].get("book_type"):
+                    book_type = entities[0]["book_type"]
             entity_count = 0
 
             # Count entities in this book

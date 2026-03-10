@@ -66,8 +66,15 @@ Output a JSON array of knowledge entries. Each entry:
   "knowledge_type": "fact|rumor|secret|witnessed_event|opinion",
   "sharing_condition": "free|trust|persuasion_dc_X|duress|never",
   "importance": 1-10,
-  "tags": ["tag1", "tag2"]
+  "tags": ["tag1", "tag2"],
+  "aliases": ["Alternate Name", "Nickname"]
 }
+
+The "aliases" field is optional. Include it ONLY on the FIRST entry for this NPC \
+if they have alternate names, nicknames, titles, or honorifics the party might use \
+(e.g., "Grandmother Hu" and "Granny Hu" are the same person; a magistrate may be \
+called both "Magistrate Chen" and just "Chen"). Omit "aliases" entirely if the NPC \
+has only one name form. Do NOT include the primary NPC name itself as an alias.
 
 Be generous with "free" sharing for non-sensitive information. NPCs in \
 adventure paths are meant to be interacted with — most knowledge should be \

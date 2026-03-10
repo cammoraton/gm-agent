@@ -476,19 +476,22 @@ class MockPathfinderSearch:
         min_level: int | None = None,
         max_level: int | None = None,
     ) -> list[dict]:
-        return [
-            {
-                "name": "Goblin",
-                "type": "creature",
-                "category": "creature",
-                "source": "Core Rulebook",
-                "book": "Core Rulebook",
-                "book_type": "rulebook",
-                "page": 42,
-                "content": "A small green humanoid creature",
-                "metadata": {},
-            }
-        ]
+        entity = {
+            "name": "Goblin",
+            "type": "creature",
+            "category": "creature",
+            "source": "Core Rulebook",
+            "book": "Core Rulebook",
+            "book_type": "rulebook",
+            "page": 42,
+            "content": "A small green humanoid creature",
+            "metadata": {},
+        }
+        # Respect include_types filter so callers asking for "subsystem" etc.
+        # don't get creature entities injected.
+        if include_types is not None and entity["type"] not in include_types:
+            return []
+        return [entity]
 
     def get_creation_table(self, key: str) -> dict:
         return {}

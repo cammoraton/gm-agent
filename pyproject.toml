@@ -17,6 +17,7 @@ dependencies = [
     "python-socketio>=5.10",
     "flasgger>=0.9",
     "sentence-transformers>=5.2.0",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

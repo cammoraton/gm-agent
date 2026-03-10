@@ -69,18 +69,7 @@ BATCH_SIZE = 15
 # Thinking config for synthesis calls
 THINKING_CONFIG = {"type": "enabled", "budget_tokens": 4096}
 
-# Canonical subsystem names → detection keyword lists
-SUBSYSTEM_KEYWORDS: dict[str, list[str]] = {
-    "kingdom": ["kingdom building", "kingdom turn", "kingdom activities", "civic activities"],
-    "influence": ["influence subsystem", "influence encounter", "influence points"],
-    "chase": ["chase subsystem", "chase points", "chase obstacle"],
-    "infiltration": ["infiltration subsystem", "infiltration points", "awareness points"],
-    "research": ["research subsystem", "research points", "learn more"],
-    "hexploration": ["hexploration", "hex exploration", "explore hex"],
-    "reputation": ["reputation subsystem", "reputation points"],
-}
-
-# Content types relevant for subsystem rule extraction
+# Content types relevant for subsystem rule extraction (kept for potential future use)
 SUBSYSTEM_CONTENT_TYPES = ["subsystem", "game_mechanic", "action", "table", "guidance"]
 
 
@@ -332,10 +321,20 @@ def seed_npc_knowledge(
             output_entries = []
 
             skipped = 0
+            aliases_registered = False
             for entry in entries:
                 content = entry.get("content", "")
                 if not content:
                     continue
+
+                # Register aliases from the first entry that includes them.
+                # The LLM is instructed to put aliases only on the first entry.
+                if not aliases_registered:
+                    aliases_registered = True
+                    for alias in entry.get("aliases", []):
+                        alias = alias.strip()
+                        if alias and alias.lower() != npc_name.lower():
+                            knowledge.add_alias(character_id, alias)
 
                 # Dedup check
                 if knowledge.has_similar_knowledge(character_id, content):
@@ -651,6 +650,36 @@ def seed_world_context_by_query(
 # =========================================================================
 
 
+# Words to strip when deriving a concept slug from subsystem entity names
+_SUBSYSTEM_NOISE_WORDS = frozenset({
+    "points", "point", "check", "checks", "dc", "penalty", "penalties",
+    "reward", "encounter", "round", "rounds", "system", "subsystem",
+    "activity", "activities", "score", "threshold", "table", "rules",
+    "rule", "the", "a", "an", "of", "to", "in", "for", "and", "or",
+    "with", "from", "bonus", "modifier", "total", "current", "maximum",
+    "running", "after", "before", "during", "result", "results",
+    "success", "failure", "critical", "special", "upon", "action",
+})
+
+
+def _derive_subsystem_type(entities: list[dict]) -> str | None:
+    """Derive a canonical type slug from novel subsystem entity names.
+
+    Counts meaningful word frequency across all entity names and returns
+    the most common non-noise word as the type slug (e.g. "expedition",
+    "research", "conviction").  Returns None if no useful word is found.
+    """
+    word_counts: dict[str, int] = {}
+    for entity in entities:
+        for raw_word in re.split(r"[\s/,]+", entity.get("name", "").lower()):
+            word = re.sub(r"[^a-z0-9]", "", raw_word)
+            if len(word) > 3 and word not in _SUBSYSTEM_NOISE_WORDS:
+                word_counts[word] = word_counts.get(word, 0) + 1
+    if not word_counts:
+        return None
+    return max(word_counts, key=word_counts.get)
+
+
 def detect_subsystems(
     search: PathfinderSearch,
     books: list[dict],
@@ -658,32 +687,40 @@ def detect_subsystems(
 ) -> list[str]:
     """Detect which PF2e subsystems an adventure path uses.
 
-    Scans AP books for subsystem keywords using page-level search.
+    Entity-based detection: reads type=subsystem entities directly from each
+    AP book and derives a concept slug from their names. Each book is checked
+    independently so multi-book APs can detect multiple distinct subsystems.
+
+    This avoids keyword guessing (and cross-AP contamination) by trusting the
+    explicit type tagging in search.db — if an entity is type=subsystem, it IS
+    a subsystem. No threshold needed; the entity type is the signal.
+
     Only considers adventure books.
 
     Returns:
-        List of detected subsystem type names (e.g. ["kingdom", "influence"]).
+        List of detected subsystem type slugs (e.g. ["kingdom", "haunting"]).
     """
-    # Filter to adventure books only
     ap_books = [b for b in books if b.get("book_type") == "adventure"]
     if not ap_books:
         return []
 
     detected: list[str] = []
+    detected_set: set[str] = set()
 
-    for subsystem_type, keywords in SUBSYSTEM_KEYWORDS.items():
-        found = False
-        for keyword in keywords:
-            if found:
-                break
-            for book_info in ap_books:
-                results = search.search_pages(keyword, book=book_info["name"], top_k=1)
-                if results:
-                    detected.append(subsystem_type)
-                    found = True
-                    if on_progress:
-                        on_progress(f"Detected subsystem: {subsystem_type} (via '{keyword}' in {book_info['name']})")
-                    break
+    for book_info in ap_books:
+        entities = search.list_entities(book=book_info["name"], include_types=["subsystem"])
+        if not entities:
+            continue
+
+        subsystem_type = _derive_subsystem_type(entities)
+        if subsystem_type and subsystem_type not in detected_set:
+            detected.append(subsystem_type)
+            detected_set.add(subsystem_type)
+            if on_progress:
+                on_progress(
+                    f"Detected subsystem: {subsystem_type} "
+                    f"({len(entities)} entities in {book_info['name']})"
+                )
 
     return detected
 
@@ -710,16 +747,19 @@ def seed_subsystem_knowledge(
     total = 0
 
     for subsystem_type in subsystem_types:
-        keywords = SUBSYSTEM_KEYWORDS.get(subsystem_type, [subsystem_type])
-        primary_keyword = keywords[0]
+        # Use the type slug as the page-level search keyword.
+        # Each AP's subsystem entities are self-contained; we don't need to
+        # pull rules from other APs or core rulebooks.
+        keyword = subsystem_type
 
-        # 1. Entities from AP books with subsystem content types
+        # 1. Subsystem entities from AP books (type=subsystem only — focused,
+        #    not a blast of all game_mechanic/guidance/action entities).
         all_entities: list[dict] = []
         seen_names: set[str] = set()
         for book_info in ap_books:
             entities = search.list_entities(
                 book=book_info["name"],
-                include_types=SUBSYSTEM_CONTENT_TYPES,
+                include_types=["subsystem"],
             )
             for e in entities:
                 name = e.get("name", "")
@@ -727,24 +767,14 @@ def seed_subsystem_knowledge(
                     seen_names.add(name)
                     all_entities.append(e)
 
-        # 2. Search across all books for core rules
-        for keyword in keywords[:2]:  # First two keywords
-            results = search.search(keyword, include_types=SUBSYSTEM_CONTENT_TYPES)
-            for r in results:
-                name = r.get("name", "")
-                if name and name not in seen_names:
-                    seen_names.add(name)
-                    all_entities.append(r)
-
-        # 3. Page-level context from AP books
+        # 2. Page-level context from AP books
         page_parts: list[str] = []
         for book_info in ap_books:
-            for keyword in keywords[:2]:
-                page_results = search.search_pages(keyword, book=book_info["name"], top_k=3)
-                for p in page_results:
-                    page_parts.append(
-                        f"[{book_info['name']} p.{p['page_number']}] {p['snippet']}"
-                    )
+            page_results = search.search_pages(keyword, book=book_info["name"], top_k=3)
+            for p in page_results:
+                page_parts.append(
+                    f"[{book_info['name']} p.{p['page_number']}] {p['snippet']}"
+                )
 
         if not all_entities and not page_parts:
             if on_progress:

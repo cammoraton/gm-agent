@@ -14,11 +14,6 @@
 version: '3.8'
 
 services:
-  nginx:
-    ports:
-      - "80:80"
-      - "8080:80"  # Alternative port for development
-
   api:
     build:
       context: ..
@@ -31,13 +26,13 @@ services:
       - ../gm_agent:/app/gm_agent:ro
       # Mount local campaigns for testing
       - ../data/campaigns:/data/campaigns
-      # Mount local pf2e-rag (sibling directory)
-      - ../../pf2e-rag:/data/pf2e-rag:ro
+      # RAG search database
+      - ../data:/data/rag:ro
     environment:
       - FLASK_DEBUG=1
       - LOG_LEVEL=DEBUG
     ports:
-      - "5000:5000"  # Direct API access for debugging
+      - "127.0.0.1:5000:5000"  # Direct API access for debugging
     # Use Flask dev server with auto-reload
     command: >
       python -m flask run
@@ -50,10 +45,10 @@ services:
     volumes:
       # Mount source code for live reloading
       - ../gm_agent:/app/gm_agent:ro
-      # Mount local pf2e-rag (sibling directory)
-      - ../../pf2e-rag:/data/pf2e-rag:ro
       # Mount local campaigns for testing
       - ../data/campaigns:/data/campaigns
+      # RAG search database
+      - ../data:/data/rag:ro
     environment:
       - LOG_LEVEL=DEBUG
     # Auto-reload on code changes
@@ -70,11 +65,27 @@ services:
 
   redis:
     ports:
-      - "6379:6379"  # Direct Redis access for debugging
+      - "127.0.0.1:6379:6379"  # Direct Redis access for debugging
+
+  chat-ui:
+    volumes:
+      - ../chat_ui.py:/app/chat_ui.py:ro
+      - ../gm_agent:/app/gm_agent:ro
+      - ../data:/data/rag:ro
+      - ../data/chat_feedback.jsonl:/data/chat_feedback.jsonl
+    environment:
+      - LOG_LEVEL=DEBUG
+      - FEEDBACK_LOG_PATH=/data/chat_feedback.jsonl
+    ports:
+      - "127.0.0.1:5001:5001"  # Direct access for debugging
+
+  ngrok:
+    ports:
+      - "4040:4040"  # ngrok web inspector UI
 
   cli:
     volumes:
       - ../cli.py:/app/cli.py:ro
       - ../gm_agent:/app/gm_agent:ro
       - ../data/campaigns:/data/campaigns
-      - ../../pf2e-rag:/data/pf2e-rag:ro
+      - ../data:/data/rag:ro

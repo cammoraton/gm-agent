@@ -1418,6 +1418,8 @@ class PathfinderSearch:
             boost = self.BOOK_TYPE_BOOST.get(r.get("book_type", ""), 0)
             if r.get("is_remaster"):
                 boost += 8  # Remaster content boost
+            if r.get("edition") == "pf1e":
+                boost -= 15  # PF1E lore is tertiary; PF2E content supersedes it
             r["score"] += boost
             r["book_type_boost"] = boost
 
@@ -1566,6 +1568,11 @@ class PathfinderSearch:
             result["is_remaster"] = bool(row["is_remaster"])
         except (IndexError, KeyError):
             result["is_remaster"] = False
+        # edition column (schema v10+) — graceful fallback for older DBs
+        try:
+            result["edition"] = row["edition"] or "pf2e"
+        except (IndexError, KeyError):
+            result["edition"] = "pf2e_remaster" if result["is_remaster"] else "pf2e"
         return result
 
     def _search_semantic(
@@ -2107,7 +2114,8 @@ class PathfinderSearch:
             ).fetchall()
             # If multiple books match AND the query is substantially shorter
             # than the resolved name, it's likely a series prefix.
-            if len(rows) > 1 and len(query) < len(single) * 0.8:
+            is_series_prefix = len(query) < len(single) * 0.8
+            if len(rows) > 1 and is_series_prefix:
                 matched = [r["book"] for r in rows]
                 # Also include companion books (player guides, etc.) in content
                 # that match the series prefix but aren't in book_summaries.
@@ -2118,6 +2126,15 @@ class PathfinderSearch:
                     (f"%{query}%", *matched),
                 ).fetchall()
                 return matched + [r["book"] for r in extra]
+            if not rows and is_series_prefix:
+                # book_summaries has no entries for this series (e.g. Season of Ghosts).
+                # Fall back to content table for series expansion.
+                all_books = self.conn.execute(
+                    "SELECT DISTINCT book FROM content WHERE book LIKE ?",
+                    (f"%{query}%",),
+                ).fetchall()
+                if len(all_books) > 1:
+                    return [r["book"] for r in all_books]
             return [single]
 
         return []

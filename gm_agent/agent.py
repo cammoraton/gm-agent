@@ -101,7 +101,9 @@ class GMAgent:
             mcp=self._mcp,
             synthesis_system_prompt="",  # Built per turn from context
             verbose=verbose,
+            campaign_mode=True,
         )
+        self._last_result = None
 
     def set_foundry_server(self, foundry_server: "FoundryVTTServer | None") -> None:
         """Set or update the Foundry VTT server.
@@ -158,6 +160,7 @@ class GMAgent:
             query=player_input,
             conversation_history=history[-6:],
         )
+        self._last_result = result
 
         # Record turn with dual-model metadata
         processing_time_ms = (time.time() - start_time) * 1000
@@ -474,6 +477,10 @@ class GMAgent:
         )
         session_store.update_scene(self.campaign.id, updated)
         self.session = session_store.get_current(self.campaign.id)
+
+    def get_last_result(self):
+        """Get the SplitResult from the most recent process_turn() call."""
+        return self._last_result
 
     def close(self) -> None:
         """Clean up resources."""

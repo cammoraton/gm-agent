@@ -60,10 +60,12 @@ An AI-powered Game Master for tabletop RPGs with a multi-system architecture. GM
 - **CLI Mode**: Interactive terminal sessions for local play
 - **REST API**: Full-featured API with optional JWT authentication
 - **Chat Mode**: Lightweight assistant for rules lookups and GM prep
+- **chatPF2E Web UI**: Sessionless browser chat — no login, no persistence, works out of the box (`uv run python chat_ui.py`)
 - **Foundry VTT Integration**: Bidirectional communication via Socket.IO
 - **Full Automation Mode**: Agent handles player chat and NPC combat turns automatically
 - **Multi-Backend LLM Support**: Ollama, OpenAI, Anthropic, and OpenRouter
 - **Distributed Architecture**: Docker Compose deployment with Celery workers
+- **ngrok Integration**: Optional profile-activated tunnel for public access without a VPS
 
 ## Advanced Features
 
@@ -125,6 +127,7 @@ REMOTE MODE (Docker Compose)
 gm-agent/
 ├── cli.py                    # Command-line interface
 ├── api.py                    # Flask REST API with MCP endpoints
+├── chat_ui.py                # chatPF2E web UI server (standalone, sessionless)
 ├── wsgi.py                   # WSGI entry point for production
 ├── docker-compose.yml        # Docker Compose deployment
 ├── data/                     # Data directory (partially gitignored)
@@ -138,6 +141,7 @@ gm-agent/
 ├── gm_agent/
 │   ├── agent.py              # Core GMAgent class (full campaign mode)
 │   ├── chat.py               # Lightweight ChatAgent (no campaign state)
+│   ├── static/chatpf2e/      # chatPF2E web UI static files (index.html, app.js, style.css)
 │   ├── config.py             # Configuration and environment variables
 │   ├── context.py            # Context assembly for LLM prompts
 │   ├── propagation.py        # Cross-system knowledge propagation (PropagationBus)
@@ -645,6 +649,7 @@ Foundry VTT ◄────HTTP/REST────  gm-agent
 ```
 
 For detailed deployment configurations, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+For the chatPF2E web UI, see [docs/CHATPF2E.md](docs/CHATPF2E.md).
 
 ### Setup
 

@@ -446,24 +446,34 @@ class NPCKnowledgeServer(MCPServer):
             return ToolResult(success=False, error="character_name is required")
 
         character = self.characters.get_by_name(character_name)
-        if not character:
-            return ToolResult(
-                success=False,
-                error=f"Character '{character_name}' not found"
-            )
 
         # Parse tags
         tags_str = args.get("tags", "")
         tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
 
-        # Query knowledge
-        knowledge = self.knowledge.query_knowledge(
-            character_id=character.id,
-            knowledge_type=args.get("knowledge_type"),
-            min_importance=args.get("min_importance"),
-            tags=tags,
-            limit=args.get("limit", 20),
-        )
+        if character:
+            # Normal path: CharacterProfile exists (runtime-created NPC)
+            knowledge = self.knowledge.query_knowledge(
+                character_id=character.id,
+                knowledge_type=args.get("knowledge_type"),
+                min_importance=args.get("min_importance"),
+                tags=tags,
+                limit=args.get("limit", 20),
+            )
+            display_name = character.name
+        else:
+            # Fallback: prep-seeded NPC with no CharacterProfile — search by name
+            knowledge, matched_name = self.knowledge.query_knowledge_by_name_fuzzy(
+                character_name,
+                knowledge_type=args.get("knowledge_type"),
+                limit=args.get("limit", 20),
+            )
+            if matched_name is None:
+                return ToolResult(
+                    success=False,
+                    error=f"Character '{character_name}' not found"
+                )
+            display_name = matched_name
 
         if not knowledge:
             filters = []
@@ -477,11 +487,11 @@ class NPCKnowledgeServer(MCPServer):
 
             return ToolResult(
                 success=True,
-                data=f"{character.name} has no knowledge matching {filter_str}"
+                data=f"{display_name} has no knowledge matching {filter_str}"
             )
 
         # Format results
-        lines = [f"{character.name} knows {len(knowledge)} things:"]
+        lines = [f"{display_name} knows {len(knowledge)} things:"]
         for k in knowledge:
             tags_display = f" [{', '.join(k.tags)}]" if k.tags else ""
             sharing_marker = "🔒" if k.sharing_condition != "free" else ""

@@ -28,14 +28,17 @@ from .session_prompts import (
     DIALOGUE_EXTRACTION_USER,
     EVENT_EXTRACTION_SYSTEM,
     EVENT_EXTRACTION_USER,
+    EXPLORATION_UPDATE_SYSTEM,
+    EXPLORATION_UPDATE_USER,
     KNOWLEDGE_UPDATE_SYSTEM,
     KNOWLEDGE_UPDATE_USER,
 )
 
 logger = logging.getLogger(__name__)
 
-# Party knowledge character ID (matches prep/knowledge.py)
+# Character IDs (mirror prep/knowledge.py constants)
 PARTY_KNOWLEDGE_ID = "__party__"
+EXPLORATION_CHARACTER_ID = "__exploration__"
 
 
 def _format_transcript(session: Session) -> str:
@@ -204,6 +207,15 @@ def update_knowledge(
     if not session.turns:
         return 0
 
+    # Build NPC roster so the LLM can use canonical character_ids
+    characters = knowledge.list_characters()
+    if characters:
+        npc_roster = "\n".join(
+            f"  {c['character_id']} → {c['character_name']}" for c in characters
+        )
+    else:
+        npc_roster = "(No NPCs seeded yet — use slugified names)"
+
     # Get existing knowledge for context to avoid duplicates
     existing = knowledge.query_knowledge(limit=50)
     existing_text = "\n".join(
@@ -212,6 +224,7 @@ def update_knowledge(
 
     user_prompt = KNOWLEDGE_UPDATE_USER.format(
         transcript=transcript,
+        npc_roster=npc_roster,
         existing_knowledge=existing_text,
     )
 
@@ -265,6 +278,85 @@ def update_knowledge(
     ))
 
     logger.info("Added %d knowledge entries from session %s", total, session.id)
+    return total
+
+
+def update_exploration_state(
+    session: Session,
+    knowledge: KnowledgeStore,
+    llm: LLMBackend,
+    logger_: PrepLogger,
+    campaign_id: str,
+) -> int:
+    """Extract exploration progress from session and store as party knowledge.
+
+    Tracks locations visited, hexes explored, and dungeon rooms cleared.
+    Stored under __party__ with exploration_state tag so query_party_knowledge
+    can surface them when the party asks what they've explored.
+
+    Returns count of exploration entries added.
+    """
+    transcript = _format_transcript(session)
+    if not session.turns:
+        return 0
+
+    user_prompt = EXPLORATION_UPDATE_USER.format(transcript=transcript)
+
+    start = time.monotonic()
+    response = _call_llm(llm, EXPLORATION_UPDATE_SYSTEM, user_prompt)
+    duration_ms = (time.monotonic() - start) * 1000
+
+    entries = _parse_json_array(response.text)
+    total = 0
+    output_entries = []
+
+    for entry in entries:
+        location = entry.get("location", "")
+        content = entry.get("content", "")
+        if not location and not content:
+            continue
+        if not content:
+            content = f"Explored: {location}"
+
+        tags = entry.get("tags", [])
+        tags.append("exploration_state")
+        if entry.get("hex_id"):
+            tags.append(f"hex:{entry['hex_id']}")
+        tags.append(f"session:{session.id}")
+        tags = list(dict.fromkeys(tags))  # dedup, preserve order
+
+        if knowledge.has_similar_knowledge(PARTY_KNOWLEDGE_ID, content):
+            continue
+
+        ke = knowledge.add_knowledge(
+            character_id=PARTY_KNOWLEDGE_ID,
+            character_name="Exploration Log",
+            content=content,
+            knowledge_type="witnessed_event",
+            sharing_condition="free",
+            source=f"session:{session.id}",
+            importance=entry.get("importance", 6),
+            decay_rate=0.0,
+            tags=tags,
+        )
+        output_entries.append(ke.to_dict())
+        total += 1
+
+    logger_.log(PrepLogEntry(
+        step="exploration_update",
+        campaign_id=campaign_id,
+        book="",
+        entity=None,
+        input_context=transcript[:4000],
+        system_prompt=EXPLORATION_UPDATE_SYSTEM,
+        thinking=response.thinking,
+        output=output_entries,
+        model=llm.get_model_name(),
+        duration_ms=duration_ms,
+        token_usage=response.usage,
+    ))
+
+    logger.info("Added %d exploration entries from session %s", total, session.id)
     return total
 
 

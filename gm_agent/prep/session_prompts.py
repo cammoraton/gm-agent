@@ -115,9 +115,47 @@ Session transcript:
 
 {transcript}
 
+Known NPCs in this campaign (use exact character_id when extracting NPC knowledge):
+{npc_roster}
+
 Existing knowledge (avoid duplicating these):
 
 {existing_knowledge}"""
+
+# =============================================================================
+# Exploration State
+# =============================================================================
+
+EXPLORATION_UPDATE_SYSTEM = """\
+Extract exploration progress from this Pathfinder 2e session transcript. \
+Identify locations, hexes, rooms, or areas the party newly visited, \
+cleared, or discovered during this session.
+
+Only extract genuinely new exploration — places the party physically \
+entered or discovered. Skip combat outcomes, NPC interactions, and \
+lore/knowledge gained (those are handled separately).
+
+For hexploration campaigns (Kingmaker, etc.): extract hex coordinates \
+when mentioned (e.g. "Hex C7", "G4").
+For dungeon-crawl campaigns: extract room/area names and what was found.
+For overland travel: settlements reached, roads taken, landmarks spotted.
+
+Output a JSON array. Each entry:
+{
+  "location": "Location name or hex coordinate",
+  "hex_id": "C7" or null (only for hexploration campaigns),
+  "content": "Brief description of what the party found or established here",
+  "importance": 1-10,
+  "tags": ["exploration_state", "hex_explored" or "room_cleared" or "settlement_visited", ...]
+}
+
+If no new locations were visited or discovered, return an empty array [].
+Respond with ONLY the JSON array, no other text."""
+
+EXPLORATION_UPDATE_USER = """\
+Session transcript:
+
+{transcript}"""
 
 # =============================================================================
 # Arc Progress

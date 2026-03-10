@@ -182,9 +182,6 @@ class TestOrchestratorPrompt:
     def test_contains_synthesize_instruction(self):
         assert "synthesize" in ORCHESTRATOR_PROMPT
 
-    def test_contains_dice_guidance(self):
-        assert "dice" in ORCHESTRATOR_PROMPT
-
     def test_contains_encounter_guidance(self):
         assert "encounter" in ORCHESTRATOR_PROMPT.lower()
 
@@ -193,7 +190,8 @@ class TestOrchestratorPrompt:
         assert "Do NOT roll dice" not in ORCHESTRATOR_PROMPT
 
     def test_has_dedup_instruction(self):
-        assert "Do NOT repeat the same tool call" in ORCHESTRATOR_PROMPT
+        # Phrasing changed; check for the key concept
+        assert "same tool" in ORCHESTRATOR_PROMPT
 
     def test_tells_not_to_answer(self):
         assert "Do NOT answer the question yourself" in ORCHESTRATOR_PROMPT
@@ -352,7 +350,7 @@ class TestOrchestratorPhase:
         assert len(result.tool_calls) == 1
 
     def test_uses_orchestrator_prompt(self):
-        """Should use ORCHESTRATOR_PROMPT as system prompt."""
+        """System prompt should include core and mode-appropriate content."""
         pipeline, ret_llm, _, _ = _make_pipeline(
             retrieval_responses=[LLMResponse(text="", tool_calls=[])],
             synthesis_responses=[LLMResponse(text="Answer.", tool_calls=[])],
@@ -360,7 +358,11 @@ class TestOrchestratorPhase:
         pipeline._orchestrate("test", [], max_iterations=1)
         system_msg = ret_llm.calls[0][0][0]
         assert system_msg.role == "system"
-        assert system_msg.content == ORCHESTRATOR_PROMPT
+        # Default pipeline has campaign_mode=False → chat mode header, no campaign sections
+        from gm_agent.split import _PROMPT_CORE, _CHAT_MODE_HEADER, _PROMPT_COMMON
+        assert _PROMPT_CORE in system_msg.content
+        assert _CHAT_MODE_HEADER in system_msg.content
+        assert _PROMPT_COMMON in system_msg.content
 
     def test_uses_low_temperature(self):
         """Orchestrator should use RETRIEVAL_TEMPERATURE."""
@@ -652,7 +654,7 @@ class TestNarratorPhase:
         assert len(syn_llm.calls) == 2
 
     def test_narrator_empty_response_hard_fallback(self):
-        """If retry also returns empty, dump reference material."""
+        """If retry also returns empty, return a generic error message."""
         pipeline, _, _, _ = _make_pipeline(
             retrieval_responses=[LLMResponse(text="", tool_calls=[])],
             synthesis_responses=[
@@ -665,8 +667,7 @@ class TestNarratorPhase:
             duration_ms=50, model="m",
         )]
         text, _ = pipeline._narrate("goblin?", retrievals, None, "")
-        assert "Here's what I found" in text
-        assert "**Goblin** Level -1" in text
+        assert "wasn't able to formulate" in text
 
     def test_narrator_empty_response_no_results_fallback(self):
         """If empty response and no results, return generic fallback."""

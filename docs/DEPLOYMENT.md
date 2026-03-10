@@ -179,6 +179,57 @@ Both services in the cloud:
 
 2. Use a process manager (systemd, PM2) or container orchestration
 
+## ngrok — Optional Public Tunnel
+
+ngrok exposes the entire stack (GM API + chatPF2E UI) over a public HTTPS URL without requiring a VPS or firewall changes. It is profile-activated so it never runs unless explicitly requested.
+
+### Setup
+
+1. Create a free account at [ngrok.com](https://ngrok.com) and copy your authtoken from the [dashboard](https://dashboard.ngrok.com/get-started/your-authtoken).
+
+2. Add the token to `infrastructure/.env.docker`:
+   ```
+   NGROK_AUTHTOKEN=your-token-here
+   ```
+
+3. Start the stack with the `ngrok` profile:
+   ```bash
+   docker compose --profile ngrok up
+   ```
+
+4. Find the public URL in the ngrok container logs:
+   ```bash
+   docker compose logs ngrok
+   # Look for: url=https://xxxx-xx-xx-xxx-xx.ngrok-free.app
+   ```
+
+The tunnel points at nginx, so the full URL map is:
+
+| Public URL | Service |
+|------------|---------|
+| `https://<tunnel>/chat/` | chatPF2E web UI |
+| `https://<tunnel>/api/` | GM Agent REST API |
+| `https://<tunnel>/socket.io/` | Foundry VTT WebSocket |
+
+### Inspecting Traffic
+
+In development, the ngrok web inspector runs at **http://localhost:4040** — inspect all proxied requests and replay them for debugging.
+
+### Free Tier Limits
+
+The ngrok free tier provides:
+- 1 simultaneous tunnel
+- Random subdomain (changes on restart)
+- 40 connections/minute rate limit
+
+For a stable subdomain or higher limits, use a paid ngrok plan and add `--domain your-subdomain.ngrok.app` to the `command` in `docker-compose.yml`.
+
+### Security Note
+
+The ngrok tunnel is **unauthenticated by default** — anyone with the URL can reach your API. For shared use, either:
+- Enable JWT auth (`API_AUTH_ENABLED=true` in `.env.docker`)
+- Or add an ngrok IP policy / basic-auth via the ngrok dashboard
+
 ## Troubleshooting
 
 ### WebSocket Mode Issues

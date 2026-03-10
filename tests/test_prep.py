@@ -11,7 +11,6 @@ from gm_agent.models.base import LLMResponse, Message
 from gm_agent.prep.knowledge import (
     PARTY_KNOWLEDGE_ID,
     SUBSYSTEM_CONTENT_TYPES,
-    SUBSYSTEM_KEYWORDS,
     _format_entities_text,
     _names_match,
     _normalize_for_compare,
@@ -1859,25 +1858,30 @@ class TestDeduplicateNPCNames:
 
 
 class TestDetectSubsystems:
-    def _make_search_with_pages(self, page_hits: dict[str, list[str]]):
-        """Create a mock search where page_hits maps keyword→list of books that have it."""
+    def _make_search_with_entities(self, entities_by_book: dict[str, list[dict]]):
+        """Create a mock search that returns subsystem entities per book."""
         mock_search = MockPathfinderSearch()
 
-        def search_pages(query, **kwargs):
+        def list_entities(**kwargs):
             book = kwargs.get("book")
-            query_lower = query.lower()
-            for keyword, books in page_hits.items():
-                if keyword.lower() in query_lower or query_lower in keyword.lower():
-                    if book in books:
-                        return [{"book": book, "page_number": 1, "chapter": "Ch1", "snippet": f"...{keyword}...", "score": 5.0}]
+            if kwargs.get("include_types") == ["subsystem"] and book in entities_by_book:
+                return entities_by_book[book]
             return []
 
-        mock_search.search_pages = search_pages
+        mock_search.list_entities = list_entities
         return mock_search
 
     def test_detects_kingdom(self):
-        mock_search = self._make_search_with_pages({
-            "kingdom building": ["Kingmaker"],
+        """Kingmaker kingdom building entities → detects 'kingdom'."""
+        mock_search = self._make_search_with_entities({
+            "Kingmaker": [
+                {"name": "Kingdom Turn", "type": "subsystem", "book": "Kingmaker",
+                 "content": "Each kingdom turn...", "metadata": {}},
+                {"name": "Kingdom Skills", "type": "subsystem", "book": "Kingmaker",
+                 "content": "Kingdom skill checks...", "metadata": {}},
+                {"name": "Kingdom Events", "type": "subsystem", "book": "Kingmaker",
+                 "content": "Random kingdom events...", "metadata": {}},
+            ],
         })
 
         result = detect_subsystems(
@@ -1887,25 +1891,37 @@ class TestDetectSubsystems:
 
         assert "kingdom" in result
 
-    def test_detects_multiple_subsystems(self):
-        mock_search = self._make_search_with_pages({
-            "kingdom building": ["Kingmaker"],
-            "influence subsystem": ["Kingmaker"],
-            "hexploration": ["Kingmaker"],
+    def test_detects_per_book_subsystems(self):
+        """Multi-book AP: each book contributes its own subsystem cluster."""
+        mock_search = self._make_search_with_entities({
+            "SoG Book 1": [
+                {"name": "Haunting the Living", "type": "subsystem", "book": "SoG Book 1",
+                 "content": "Haunting rules.", "metadata": {}},
+                {"name": "Haunting Points", "type": "subsystem", "book": "SoG Book 1",
+                 "content": "Haunting threshold.", "metadata": {}},
+            ],
+            "SoG Book 2": [
+                {"name": "Feast Preparation", "type": "subsystem", "book": "SoG Book 2",
+                 "content": "Prepare the feast.", "metadata": {}},
+                {"name": "Feast Rewards", "type": "subsystem", "book": "SoG Book 2",
+                 "content": "After the feast.", "metadata": {}},
+            ],
         })
 
         result = detect_subsystems(
             mock_search,
-            books=[{"name": "Kingmaker", "book_type": "adventure"}],
+            books=[
+                {"name": "SoG Book 1", "book_type": "adventure"},
+                {"name": "SoG Book 2", "book_type": "adventure"},
+            ],
         )
 
-        assert "kingdom" in result
-        assert "influence" in result
-        assert "hexploration" in result
+        assert "haunting" in result
+        assert "feast" in result
 
     def test_no_false_positives(self):
-        """AP without subsystems returns empty list."""
-        mock_search = self._make_search_with_pages({})
+        """AP without type=subsystem entities returns empty list."""
+        mock_search = self._make_search_with_entities({})
 
         result = detect_subsystems(
             mock_search,
@@ -1914,10 +1930,76 @@ class TestDetectSubsystems:
 
         assert result == []
 
+    def test_no_cross_ap_contamination(self):
+        """Subsystem entities from one AP don't bleed into another AP's detection."""
+        # Only Kingmaker has kingdom entities; SoG gets an empty list
+        mock_search = self._make_search_with_entities({
+            "Kingmaker": [
+                {"name": "Kingdom Turn", "type": "subsystem", "book": "Kingmaker",
+                 "content": "Each kingdom turn...", "metadata": {}},
+            ],
+        })
+
+        result = detect_subsystems(
+            mock_search,
+            books=[{"name": "Season of Ghosts Book 1", "book_type": "adventure"}],
+        )
+
+        assert "kingdom" not in result
+        assert result == []
+
+    def test_detects_novel_subsystem_via_entity_type(self):
+        """Any AP with type=subsystem entities gets a detected subsystem."""
+        mock_search = self._make_search_with_entities({
+            "Hellbreakers": [
+                {"name": "Corruption Track", "type": "subsystem", "book": "Hellbreakers",
+                 "content": "Track PC corruption.", "metadata": {}},
+                {"name": "Corruption Points", "type": "subsystem", "book": "Hellbreakers",
+                 "content": "Corruption threshold.", "metadata": {}},
+                {"name": "Corruption Threshold", "type": "subsystem", "book": "Hellbreakers",
+                 "content": "At 10 corruption...", "metadata": {}},
+            ],
+        })
+
+        result = detect_subsystems(
+            mock_search,
+            books=[{"name": "Hellbreakers", "book_type": "adventure"}],
+        )
+
+        assert "corruption" in result
+
+    def test_same_subsystem_across_books_not_duplicated(self):
+        """Same subsystem type derived from multiple books in one AP is listed once."""
+        mock_search = self._make_search_with_entities({
+            "Wardens Book 1": [
+                {"name": "Influence Points", "type": "subsystem", "book": "Wardens Book 1",
+                 "content": "Influence round.", "metadata": {}},
+                {"name": "Influence Threshold", "type": "subsystem", "book": "Wardens Book 1",
+                 "content": "Influence limit.", "metadata": {}},
+            ],
+            "Wardens Book 2": [
+                {"name": "Influence Actions", "type": "subsystem", "book": "Wardens Book 2",
+                 "content": "Influence actions.", "metadata": {}},
+            ],
+        })
+
+        result = detect_subsystems(
+            mock_search,
+            books=[
+                {"name": "Wardens Book 1", "book_type": "adventure"},
+                {"name": "Wardens Book 2", "book_type": "adventure"},
+            ],
+        )
+
+        assert result.count("influence") == 1
+
     def test_ignores_non_adventure_books(self):
         """Setting/rulebook books should be ignored for detection."""
-        mock_search = self._make_search_with_pages({
-            "kingdom building": ["GM Core"],
+        mock_search = self._make_search_with_entities({
+            "GM Core": [
+                {"name": "Kingdom Turn", "type": "subsystem", "book": "GM Core",
+                 "content": "Kingdom rules.", "metadata": {}},
+            ],
         })
 
         result = detect_subsystems(
@@ -1931,14 +2013,19 @@ class TestDetectSubsystems:
         assert result == []
 
     def test_progress_callback(self):
-        mock_search = self._make_search_with_pages({
-            "chase subsystem": ["AP Vol 1"],
+        mock_search = self._make_search_with_entities({
+            "Chase AP": [
+                {"name": "Chase Points", "type": "subsystem", "book": "Chase AP",
+                 "content": "Chase rules.", "metadata": {}},
+                {"name": "Chase Obstacles", "type": "subsystem", "book": "Chase AP",
+                 "content": "Obstacles in chase.", "metadata": {}},
+            ],
         })
 
         messages = []
         detect_subsystems(
             mock_search,
-            books=[{"name": "AP Vol 1", "book_type": "adventure"}],
+            books=[{"name": "Chase AP", "book_type": "adventure"}],
             on_progress=messages.append,
         )
 
@@ -2162,7 +2249,12 @@ class TestPipelineSubsystemStep:
         # search_pages detects kingdom
         def search_pages(query, **kwargs):
             if "kingdom" in query.lower():
-                return [{"book": "AP", "page_number": 500, "chapter": "Kingdom", "snippet": "...kingdom building...", "score": 5.0}]
+                top_k = kwargs.get("top_k", 1)
+                return [
+                    {"book": "AP", "page_number": 500 + i, "chapter": "Kingdom",
+                     "snippet": "...kingdom building...", "score": 5.0}
+                    for i in range(top_k)
+                ]
             return []
 
         mock_search.search_pages = search_pages

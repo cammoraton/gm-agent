@@ -594,6 +594,7 @@ class TestCrunchPipeline:
         llm = MockLLMBackend(responses=[
             LLMResponse(text="[]", usage={}),  # dialogue
             LLMResponse(text="[]", usage={}),  # knowledge
+            LLMResponse(text="[]", usage={}),  # exploration
             LLMResponse(text="Arc text.", usage={}),  # arc
         ])
 
@@ -606,8 +607,8 @@ class TestCrunchPipeline:
 
         # events step was skipped
         assert result.events_count == 0
-        # other steps ran (LLM called 3 times: dialogue, knowledge, arc)
-        assert len(llm.calls) == 3
+        # other steps ran (LLM called 4 times: dialogue, knowledge, exploration, arc)
+        assert len(llm.calls) == 4
         pipeline.close()
 
     def test_idempotent_recrunch(self, tmp_path):

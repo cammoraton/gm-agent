@@ -12,11 +12,17 @@ from ..storage.history import HistoryIndex
 from ..storage.knowledge import KnowledgeStore
 from ..storage.schemas import Session
 from .log import PrepLogger
-from .session import extract_dialogue, extract_events, update_arc, update_knowledge
+from .session import (
+    extract_dialogue,
+    extract_events,
+    update_arc,
+    update_exploration_state,
+    update_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
-ALL_STEPS = ("events", "dialogue", "knowledge", "arc")
+ALL_STEPS = ("events", "dialogue", "knowledge", "exploration", "arc")
 
 
 @dataclass
@@ -28,13 +34,14 @@ class CrunchResult:
     events_count: int = 0
     dialogue_count: int = 0
     knowledge_count: int = 0
+    exploration_count: int = 0
     arc_updated: bool = False
     duration_ms: float = 0.0
     errors: list[str] = field(default_factory=list)
 
     @property
     def total_count(self) -> int:
-        return self.events_count + self.dialogue_count + self.knowledge_count
+        return self.events_count + self.dialogue_count + self.knowledge_count + self.exploration_count
 
 
 class CrunchPipeline:
@@ -129,7 +136,17 @@ class CrunchPipeline:
                 logger.error("Knowledge update failed: %s", e)
                 result.errors.append(f"Knowledge update failed: {e}")
 
-        # Step 4: Update arc
+        # Step 4: Extract exploration state
+        if "exploration" in active_steps:
+            try:
+                result.exploration_count = update_exploration_state(
+                    session, self.knowledge, self.llm, self.logger, self.campaign_id
+                )
+            except Exception as e:
+                logger.error("Exploration state update failed: %s", e)
+                result.errors.append(f"Exploration state update failed: {e}")
+
+        # Step 5: Update arc
         if "arc" in active_steps:
             try:
                 campaign = self.campaign_store.get(self.campaign_id)
